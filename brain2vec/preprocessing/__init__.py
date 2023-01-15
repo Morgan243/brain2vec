@@ -1,8 +1,6 @@
-
 import numpy as np
 import pandas as pd
 from scipy import signal as sig
-import attr
 
 
 def peak_normalization(arr_s, output_type=int):

@@ -1,4 +1,3 @@
-import copy
 from typing import Optional, Tuple, List
 
 import pandas as pd
@@ -22,12 +21,10 @@ from fairseq.modules import (
 from brain2vec import datasets
 from brain2vec import models as base
 bmp = base
-#from ecog_speech.models import base as bmp
-#from ecog_speech.models import base_fine_tuners as base_ft
 from mmz.models import base_fine_tuners as base_ft
 
-#from ecog_speech.models.base import Trainer
 from brain2vec.models import Trainer
+
 
 # https://github.com/pytorch/audio/blob/a92ae3688afad51245d135a3f361fb7e20364d6d/torchaudio/models/wav2vec2/components.py#L718
 def _compute_mask_indices(

@@ -1,11 +1,9 @@
 from mmz import utils
 from mmz import experiments as mxp
-#from ecog_speech.models import base as bmp
 from mmz import models as bmm
 
 from brain2vec import datasets
 from brain2vec.datasets import harvard_sentences, northwestern_words
-from brain2vec import models as base_models
 from brain2vec.models import brain2vec
 
 from simple_parsing import ArgumentParser, choice, subgroups
