@@ -1,0 +1,1 @@
+from mmz.models import *
