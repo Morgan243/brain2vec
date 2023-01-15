@@ -1,9 +1,5 @@
 import os
 import attr
-import socket
-from glob import glob
-from os import path
-from os import environ
 
 import pandas as pd
 import numpy as np
@@ -19,8 +15,11 @@ from simple_parsing.helpers import JsonSerializable
 
 from typing import List, Optional, Type, ClassVar
 
-from ecog_speech import feature_processing, utils, pipeline
+#from ecog_speech import feature_processing, utils, pipeline
+from mmz import utils
 from sklearn.pipeline import Pipeline
+from brain2vec.preprocessing import steps as ps
+from brain2vec import preprocessing as proc
 
 from brain2vec.datasets import BaseDataset
 
@@ -212,7 +211,7 @@ class BaseASPEN(BaseDataset):
             self.logger.info(f"Selected {len(self.selected_columns)} sensors")
             ###-----
 
-            self.sensor_selection_trf = pipeline.ApplySensorSelection(selection=self.selected_columns)
+            self.sensor_selection_trf = ps.ApplySensorSelection(selection=self.selected_columns)
             self.data_maps = {l_p_s_t_tuple: self.sensor_selection_trf.transform(mat_d)
                               for l_p_s_t_tuple, mat_d in tqdm(self.data_maps.items(),
                                                                desc='Applying sensor selection')}
@@ -317,25 +316,25 @@ class BaseASPEN(BaseDataset):
         self.logger.debug(f"default pipeline: {default}")
         p_map = {
             'audio_gate': Pipeline([
-                ('parse_signal', pipeline.ParseTimeSeriesArrToFrame(self.mat_d_keys['signal'],
+                ('parse_signal', ps.ParseTimeSeriesArrToFrame(self.mat_d_keys['signal'],
                                                                     self.mat_d_keys['signal_fs'],
                                                                     default_fs=1200, output_key='signal')),
-                ('parse_audio', pipeline.ParseTimeSeriesArrToFrame(self.mat_d_keys['audio'],
+                ('parse_audio', ps.ParseTimeSeriesArrToFrame(self.mat_d_keys['audio'],
                                                                    self.mat_d_keys['audio_fs'],
                                                                    default_fs=48000, reshape=-1)),
-                ('parse_stim', pipeline.ParseTimeSeriesArrToFrame(self.mat_d_keys['stimcode'],
+                ('parse_stim', ps.ParseTimeSeriesArrToFrame(self.mat_d_keys['stimcode'],
                                                                   self.mat_d_keys['signal_fs'],
                                                                   default_fs=1200, reshape=-1, output_key='stim')),
-                ('sensor_selection', pipeline.IdentifyGoodAndBadSensors(sensor_selection=self.sensor_columns)),
-                ('subsample', pipeline.SubsampleSignal()),
-                ('Threshold', pipeline.PowerThreshold(speaking_window_samples=48000 // 16,
+                ('sensor_selection', ps.IdentifyGoodAndBadSensors(sensor_selection=self.sensor_columns)),
+                ('subsample', ps.SubsampleSignal()),
+                ('Threshold', ps.PowerThreshold(speaking_window_samples=48000 // 16,
                                                       silence_window_samples=int(48000 * 1.5),
                                                       speaking_quantile_threshold=0.9,
                                                       # n_silence_windows=5000,
                                                       # silence_threshold=0.001,
                                                       # silGence_quantile_threshold=0.05,
                                                       silence_n_smallest=5000)),
-                ('speaking_indices', pipeline.WindowSampleIndicesFromStim('stim_pwrt',
+                ('speaking_indices', ps.WindowSampleIndicesFromStim('stim_pwrt',
                                                                           target_onset_shift=pd.Timedelta(-.5, 's'),
                                                                           # input are centers, and output is a window of .5 sec
                                                                           # so to center it, move the point (center) back .25 secods
@@ -345,7 +344,7 @@ class BaseASPEN(BaseDataset):
                                                                           )
                  ),
 
-                ('silence_indices', pipeline.WindowSampleIndicesFromIndex('silence_stim_pwrt_s',
+                ('silence_indices', ps.WindowSampleIndicesFromIndex('silence_stim_pwrt_s',
                                                                           # Center the extracted 0.5 second window
                                                                           index_shift=pd.Timedelta(-0.25, 's'),
                                                                           stim_value_remap=0
@@ -736,7 +735,7 @@ class BaseASPEN(BaseDataset):
             fig = axs[0].get_figure()
 
         if band is not None:
-            plt_df = t_word_ecog_df[scols].pipe(feature_processing.filter, band=band,
+            plt_df = t_word_ecog_df[scols].pipe(proc.filter, band=band,
                                                 sfreq=self.fs_signal)
         else:
             plt_df = t_word_ecog_df[scols]

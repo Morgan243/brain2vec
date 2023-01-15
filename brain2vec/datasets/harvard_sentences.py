@@ -19,7 +19,8 @@ from simple_parsing.helpers import JsonSerializable
 
 from typing import List, Optional, Type, ClassVar
 
-from ecog_speech import feature_processing, utils, pipeline
+from mmz import utils
+from brain2vec.preprocessing import steps as ps
 from sklearn.pipeline import Pipeline
 
 from brain2vec.datasets import BaseDataset, DatasetOptions
@@ -72,28 +73,28 @@ class HarvardSentences(BaseASPEN):
         so for now it is bound method (not classmethod or staticmethod).
         """
         parse_arr_steps = [
-            ('parse_signal', pipeline.ParseTimeSeriesArrToFrame(self.mat_d_keys['signal'],
+            ('parse_signal', ps.ParseTimeSeriesArrToFrame(self.mat_d_keys['signal'],
                                                                 self.mat_d_keys['signal_fs'],
                                                                 1200, output_key='signal')),
-            ('parse_audio', pipeline.ParseTimeSeriesArrToFrame(self.mat_d_keys['audio'],
+            ('parse_audio', ps.ParseTimeSeriesArrToFrame(self.mat_d_keys['audio'],
                                                                self.mat_d_keys['audio_fs'],
                                                                48000, reshape=-1)),
-            ('parse_stim', pipeline.ParseTimeSeriesArrToFrame(self.mat_d_keys['stimcode'],
+            ('parse_stim', ps.ParseTimeSeriesArrToFrame(self.mat_d_keys['stimcode'],
                                                               self.mat_d_keys['signal_fs'],
                                                               # TODO: Check the default rate here - 1024?
                                                               1200, reshape=-1, output_key='stim')),
-            ('parse_sensor_ras', pipeline.ParseSensorRAS()),
-            ('extract_mfc', pipeline.ExtractMFCC())
+            ('parse_sensor_ras', ps.ParseSensorRAS()),
+            ('extract_mfc', ps.ExtractMFCC())
         ]
 
         parse_input_steps = [
-            ('sensor_selection', pipeline.IdentifyGoodAndBadSensors(sensor_selection=self.sensor_columns)),
+            ('sensor_selection', ps.IdentifyGoodAndBadSensors(sensor_selection=self.sensor_columns)),
             # TODO: Wave2Vec2 standardizes like this
             #  - but should we keep this in to match or should we batch norm at the top?
             #('rescale_signal', pipeline.StandardNormSignal()),
-            ('subsample', pipeline.SubsampleSignal()),
-            ('sent_from_start_stop', pipeline.SentCodeFromStartStopWordTimes()),
-            ('all_stim', pipeline.CreateAllStim()),
+            ('subsample', ps.SubsampleSignal()),
+            ('sent_from_start_stop', ps.SentCodeFromStartStopWordTimes()),
+            ('all_stim', ps.CreateAllStim()),
 
         ]
 
@@ -103,7 +104,7 @@ class HarvardSentences(BaseASPEN):
         #]
 
         audio_gate_steps = [
-            ('Threshold', pipeline.PowerThreshold(speaking_window_samples=48000 // 16,
+            ('Threshold', ps.PowerThreshold(speaking_window_samples=48000 // 16,
                                                   silence_window_samples=int(48000 * 1.5),
                                                   speaking_quantile_threshold=0.85,
                                                   # silence_threshold=0.001,
@@ -124,13 +125,13 @@ class HarvardSentences(BaseASPEN):
 #                                                                      #max_target_region_size=300
 #                                                                      sample_n=20000,
 #                                                                      )),
-            ('speaking_indices', pipeline.WindowSampleIndicesFromIndex('stim_pwrt',
+            ('speaking_indices', ps.WindowSampleIndicesFromIndex('stim_pwrt',
                                                                       # Center the extracted 0.5 second window
                                                                       index_shift=pd.Timedelta(-0.25, 's'),
                                                                       stim_value_remap=1,
                                                                       sample_n=10000,
                                                                       )),
-            ('silence_indices', pipeline.WindowSampleIndicesFromIndex('silence_stim_pwrt_s',
+            ('silence_indices', ps.WindowSampleIndicesFromIndex('silence_stim_pwrt_s',
                                                                       # Center the extracted 0.5 second window
                                                                       index_shift=pd.Timedelta(-0.25, 's'),
                                                                       stim_value_remap=0,
@@ -138,7 +139,7 @@ class HarvardSentences(BaseASPEN):
                                                                       ))
         ]
         audio_gate_all_region_steps = [
-                                          ('Threshold', pipeline.PowerThreshold(speaking_window_samples=48000 // 16,
+                                          ('Threshold', ps.PowerThreshold(speaking_window_samples=48000 // 16,
                                                   silence_window_samples=int(48000 * 1.5),
                                                   speaking_quantile_threshold=0.85,
                                                   # silence_threshold=0.001,
@@ -150,45 +151,45 @@ class HarvardSentences(BaseASPEN):
                                                   ))
         ] + audio_gate_steps[1:]
 
-        start_stop_steps = [('new_mtss', pipeline.AppendExtraMultiTaskStartStop()),
+        start_stop_steps = [('new_mtss', ps.AppendExtraMultiTaskStartStop()),
                                                  # Stims from Start-stop-times
-                                                 ('speaking_word_stim', pipeline.NewStimFromRegionStartStopTimes(
+                                                 ('speaking_word_stim', ps.NewStimFromRegionStartStopTimes(
                                                                         start_t_column='start_t',
                                                                         stop_t_column='stop_t',
                                                                         stim_output_name='speaking_word_stim',
                                                  )),
-                                                 ('listening_word_stim', pipeline.NewStimFromRegionStartStopTimes(
+                                                 ('listening_word_stim', ps.NewStimFromRegionStartStopTimes(
                                                                         start_t_column='listening_word_start_t',
                                                                         stop_t_column='listening_word_stop_t',
                                                                         stim_output_name='listening_word_stim',
                                                  )),
-                                                 ('mouthing_word_stim', pipeline.NewStimFromRegionStartStopTimes(
+                                                 ('mouthing_word_stim', ps.NewStimFromRegionStartStopTimes(
                                                                         start_t_column='mouthing_word_start_t',
                                                                         stop_t_column='mouthing_word_stop_t',
                                                                         stim_output_name='mouthing_word_stim',
                                                  )),
-                                                ('imagining_word_stim', pipeline.NewStimFromRegionStartStopTimes(
+                                                ('imagining_word_stim', ps.NewStimFromRegionStartStopTimes(
                                                                         start_t_column='imagining_word_start_t',
                                                                         stop_t_column='imagining_word_stop_t',
                                                                         stim_output_name='imagining_word_stim',
                                                 )),
 
-                            ('speaking_region_stim', pipeline.NewStimFromRegionStartStopTimes(
+                            ('speaking_region_stim', ps.NewStimFromRegionStartStopTimes(
                                 start_t_column='speaking_region_start_t',
                                 stop_t_column='speaking_region_stop_t',
                                 stim_output_name='speaking_region_stim',
                             )),
-                            ('listening_region_stim', pipeline.NewStimFromRegionStartStopTimes(
+                            ('listening_region_stim', ps.NewStimFromRegionStartStopTimes(
                                 start_t_column='listening_region_start_t',
                                 stop_t_column='listening_region_stop_t',
                                 stim_output_name='listening_region_stim',
                             )),
-                            ('mouthing_region_stim', pipeline.NewStimFromRegionStartStopTimes(
+                            ('mouthing_region_stim', ps.NewStimFromRegionStartStopTimes(
                                 start_t_column='mouthing_region_start_t',
                                 stop_t_column='mouthing_region_stop_t',
                                 stim_output_name='mouthing_region_stim',
                             )),
-                            ('imagining_region_stim', pipeline.NewStimFromRegionStartStopTimes(
+                            ('imagining_region_stim', ps.NewStimFromRegionStartStopTimes(
                                 start_t_column='imagining_region_start_t',
                                 stop_t_column='imagining_region_stop_t',
                                 stim_output_name='imagining_region_stim',
@@ -204,19 +205,19 @@ class HarvardSentences(BaseASPEN):
             target_onset_shift=pd.Timedelta(-.5, 's'),
             target_offset_shift=pd.Timedelta(-0.5, 's'),
         )
-        select_words = pipeline.SelectWordsFromStartStopTimes()
+        select_words = ps.SelectWordsFromStartStopTimes()
         p_map = {
             'random_sample': Pipeline(parse_arr_steps + parse_input_steps
-            + [('rnd_stim', pipeline.RandomStim(10_000)),
-               ('rnd_indices', pipeline.WindowSampleIndicesFromIndex(stim_key='random_stim'))]
+            + [('rnd_stim', ps.RandomStim(10_000)),
+               ('rnd_indices', ps.WindowSampleIndicesFromIndex(stim_key='random_stim'))]
                                       + [('output', 'passthrough')]),
 
             'random_sample_pinknoise': Pipeline(parse_arr_steps + parse_input_steps +
                                                 [
-                                                    ('pinknoise', pipeline.ReplaceSignalWithPinkNoise()),
-                                                    ('rnd_stim', pipeline.RandomStim(10_000)),
+                                                    ('pinknoise', ps.ReplaceSignalWithPinkNoise()),
+                                                    ('rnd_stim', ps.RandomStim(10_000)),
                                                     ('rnd_indices',
-                                                     pipeline.WindowSampleIndicesFromIndex(stim_key='random_stim'))]
+                                                     ps.WindowSampleIndicesFromIndex(stim_key='random_stim'))]
                                                 + [('output', 'passthrough')]
                                                 ),
 
@@ -231,19 +232,19 @@ class HarvardSentences(BaseASPEN):
                                                              + [
                                                                  # Indices from Stim - these populate the class labels
                                                                  ('speaking_indices',
-                                                                  pipeline.WindowSampleIndicesFromStim(
+                                                                  ps.WindowSampleIndicesFromStim(
                                                                       'speaking_region_stim',
                                                                       stim_value_remap=0, **region_kws)),
                                                                  ('listening_indices',
-                                                                  pipeline.WindowSampleIndicesFromStim(
+                                                                  ps.WindowSampleIndicesFromStim(
                                                                       'listening_region_stim',
                                                                       stim_value_remap=1, **region_kws)),
                                                                  ('mouthing_indices',
-                                                                  pipeline.WindowSampleIndicesFromStim(
+                                                                  ps.WindowSampleIndicesFromStim(
                                                                       'mouthing_region_stim',
                                                                       stim_value_remap=2, **region_kws)),
                                                                  ('imagining_indices',
-                                                                  pipeline.WindowSampleIndicesFromStim(
+                                                                  ps.WindowSampleIndicesFromStim(
                                                                       'imagining_region_stim',
                                                                       stim_value_remap=3, **region_kws)),
                                                                  ('output', 'passthrough')
@@ -252,23 +253,23 @@ class HarvardSentences(BaseASPEN):
             'region_classification_from_word_stim': Pipeline(parse_arr_steps + parse_input_steps + start_stop_steps
                                               + [
                                                 # Indices from Stim - these populate the class labels
-                                                ('speaking_indices', pipeline.WindowSampleIndicesFromStim(
+                                                ('speaking_indices', ps.WindowSampleIndicesFromStim(
                                                     'speaking_word_stim',
                                                     stim_value_remap=0,
                                                     **region_from_word_kws
                                                 )),
-                                                 ('listening_indices', pipeline.WindowSampleIndicesFromStim(
+                                                 ('listening_indices', ps.WindowSampleIndicesFromStim(
                                                     'listening_word_stim',
                                                     stim_value_remap=1,
                                                     **region_from_word_kws
                                                  )),
-                                                 ('mouthing_indices', pipeline.WindowSampleIndicesFromStim(
+                                                 ('mouthing_indices', ps.WindowSampleIndicesFromStim(
                                                     'mouthing_word_stim',
                                                     stim_value_remap=2,
                                                     **region_from_word_kws
 
                                                  )),
-                                                 ('imagining_indices', pipeline.WindowSampleIndicesFromStim(
+                                                 ('imagining_indices', ps.WindowSampleIndicesFromStim(
                                                     'imagining_word_stim',
                                                     stim_value_remap=3,
                                                     **region_from_word_kws
@@ -283,14 +284,14 @@ class HarvardSentences(BaseASPEN):
                                                  #+ audio_gate_steps +
                                             + [
                                                 ('select_words_from_wsst', select_words),
-                                                ('selected_speaking_word_stim', pipeline.NewStimFromRegionStartStopTimes(
+                                                ('selected_speaking_word_stim', ps.NewStimFromRegionStartStopTimes(
                                                     start_t_column='start_t',
                                                     stop_t_column='stop_t',
                                                     label_column='selected_word',
                                                     code_column='selected_word_code',
                                                     stim_output_name='selected_speaking_word_stim',
                                                     default_stim_value=-1)),
-                                                ('word_indices', pipeline.WindowSampleIndicesFromIndex(
+                                                ('word_indices', ps.WindowSampleIndicesFromIndex(
                                                     'selected_speaking_word_stim',
                                                     method='unique_values',
                                                     stim_value_remap=select_words.code_to_word_map)),
