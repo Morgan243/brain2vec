@@ -1,1 +1,92 @@
-from mmz.experiments import *
+import pandas as pd
+import numpy as np
+import matplotlib
+from pathlib import Path
+from matplotlib import pyplot as plt
+from glob import glob
+import os
+import json
+
+
+from tqdm.auto import tqdm
+import torch
+
+from pprint import pprint
+
+# TODO: Swap these out
+from ecog_speech import datasets, feature_processing, experiments, utils
+from ecog_speech import models
+from ecog_speech.models import base
+
+
+
+def load_results_to_frame(p, config_params=None):
+    result_files = glob(p)
+
+    json_result_data = [json.load(open(f)) for f in tqdm(result_files)]
+    results_df = pd.DataFrame(json_result_data)
+    #results_df['bw_reg_weight'] = results_df['bw_reg_weight'].fillna(-1)
+    try:
+        results_df['test_patient'] = results_df['test_sets'].str.split('-').apply(lambda l: '-'.join(l[:-1]))
+        results_df['test_fold'] = results_df['test_sets'].str.split('-').apply(lambda l: l[-1])
+    except:
+        print("Unable to parse test patient - was there one?")
+
+    ####
+    if config_params is None:
+        return results_df
+    elif isinstance(config_params, bool) and config_params:
+        config_params = [n for n in experiments.all_model_hyperparam_names if n in results_df.columns.values]
+
+    print("All config params to consider: " + ", ".join(config_params))
+    #config_params = default_config_params if config_params is None else config_params
+    nun_config_params = results_df[config_params].nunique()
+
+    config_cols = nun_config_params[nun_config_params > 1].index.tolist()
+    fixed_config_cols = nun_config_params[nun_config_params == 1].index.tolist()
+
+    ###
+
+    try:
+        fixed_unique = results_df[fixed_config_cols].apply(pd.unique)
+        if isinstance(fixed_unique, pd.DataFrame):
+            fixed_d = fixed_unique.iloc[0].to_dict()
+        else:
+            fixed_d = fixed_unique.to_dict()
+
+        fixed_d_str = "\n\t".join(f"{k}={v}" for k, v in fixed_d.items())
+        #print(f"Fixed Params: {', '.join(fixed_config_cols)}")
+        print(f"Fixed Params:\n------------\n\t{fixed_d_str}")
+        print(f"Changing Params: {', '.join(config_cols)}\n-------------\n")
+        print(results_df.groupby(config_cols).size().unstack(-1))
+    except:
+        print("Unable to summarize parameterization of result files... new result structure?")
+
+    return fixed_config_cols, config_cols, results_df
+
+
+def load_model_from_results(results, base_model_path=None, **kws_update):
+    model_kws = results['model_kws']
+
+    if base_model_path is not None:
+        _p = results['save_model_path']
+        _p = _p if '\\' not in _p else _p.replace('\\', '/')
+
+        model_filename = os.path.split(_p)[-1]
+        model_path = os.path.join(base_model_path, model_filename)
+        if not os.path.isfile(model_path):
+            raise ValueError(f"Inferred model path does not exist: {model_path}")
+    else:
+        model_path = results['save_model_path']
+
+
+    model_kws.update(kws_update)
+    model, _ = models.make_model(model_name=results['model_name'], model_kws=model_kws)
+
+    with open(model_path, 'rb') as f:
+        model_state = torch.load(f)
+
+    model.load_state_dict(model_state)
+    return model
+    #model.to(options.device)
+

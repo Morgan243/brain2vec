@@ -1,4 +1,5 @@
 import pandas as pd
+import torch
 
 from mmz import utils, datasets
 
@@ -6,6 +7,7 @@ with_logger = utils.with_logger(prefix_name=__name__)
 
 from mmz.models import *
 
+from typing import Optional, Dict, List, Tuple
 
 
 @with_logger
@@ -55,12 +57,15 @@ class Trainer:
 
     def __attrs_post_init__(self):
         self.model_map = {k: v.to(self.device) for k, v in self.model_map.items()}
+
         self.scheduler_map = dict()
-        #self.opt_map = dict()
+        # Go throught the provided models to init, init their optimizers with their parameters, and setup their scheduler
         for k, m in self.model_map.items():
+            # Init model weights
             if self.weights_init_f is not None:
                 m.apply(self.weights_init_f)
 
+            # Hard coded support for a some optimizers and their different constructions
             if k not in self.opt_map:
                 if self.default_optim_cls == torch.optim.Adam:
                     self.opt_map[k] = self.default_optim_cls(m.parameters(),
@@ -78,30 +83,15 @@ class Trainer:
                                                                                    verbose=True,
                                                                                    **self.lr_adjust_on_plateau_kws)
 
+    def copy_model_states(self, models_to_exclude: Optional[List[str]] = None) -> Dict[str, Dict[str, torch.Tensor]]:
+        models_to_exclude = list() if models_to_exclude is None else models_to_exclude
+        return {k: copy_model_state(m) for k, m in self.model_map.items() if k not in models_to_exclude}
+
     def get_best_state(self, model_key='model'):
         if getattr(self, 'best_model_state', None) is not None:
             return self.best_model_state
         else:
-            return self.copy_model_state(self.model_map[model_key])
-
-    @staticmethod
-    def weights_init(m):
-        classname = m.__class__.__name__
-        if 'Sinc' in classname:
-            pass
-        elif ('Conv' in classname or 'Linear' in classname) and getattr(m, 'weight', None) is not None:
-            torch.nn.init.normal_(m.weight.data, 0.0, 0.02)
-        elif 'BatchNorm' in classname and m.weight is not None:
-            torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
-            torch.nn.init.constant_(m.bias.data, 0)
-
-    @staticmethod
-    def copy_model_state(m):
-        return copy_model_state(m)
-        #from collections import OrderedDict
-        #s = OrderedDict([(k, v.cpu().detach().clone())
-        #                  for k, v in m.state_dict().items()])
-        #return s
+            return copy_model_state(self.model_map[model_key])
 
     def train(self, n_epochs,
               epoch_callbacks=None,
@@ -158,11 +148,10 @@ class Trainer:
 
                 self.epoch_batch_res_map[epoch] = epoch_batch_results
                 self.epoch_res_map[epoch] = {k: np.mean(v) for k, v in epoch_batch_results.items()}
-                # Just assume they are all the same size
-                #self.epoch_res_map[epoch] = {k: np.sum(v) / (self.n_samples * update_d['n']) for k, v in epoch_batch_results.items()}
 
                 self.epochs_trained += 1
                 self.epoch_cb_history.append({k: cb(self) for k, cb in epoch_callbacks.items()})
+
                 # Produce eval results if a cv dataloader was given
                 if self.cv_data_gen:
                     cv_losses_d = self._eval(epoch, self.cv_data_gen)
@@ -187,10 +176,6 @@ class Trainer:
                             self.logger.info(f"{epoch} - {self.last_best_epoch} > {self.early_stopping_patience} :: {cv_l_mean}, {self.last_best_cv_l}")
                             self.logger.info("-------------------------")
                             break
-                    #cv_o_map, new_best = self._eval(epoch, self.cv_data_gen)
-                    #self.epoch_res_map[epoch]['cv_loss'] = np.mean(cv_o_map['loss'])
-                    #if new_best:
-                    #    print(f"[[ NEW BEST: {self.best_cv} ]]")
 
                 epoch_pbar.update(1)
         return self.epoch_res_map
@@ -382,3 +367,63 @@ class Trainer:
 
         return output_map
 
+
+ ########
+# Model Options
+@dataclass
+class ModelOptions(JsonSerializable):
+    non_hyperparams: ClassVar[Optional[list]] = ['device']
+
+    @classmethod
+    def get_all_model_hyperparam_names(cls):
+        return [k for k, v in cls.__annotations__.items()
+                if k not in cls.non_hyperparams]
+
+    def make_model_kws(self, dataset=None, **kws):
+        non_model_params = self.get_all_model_hyperparam_names()
+        return {k: v for k, v in self.__annotations__.items() if k not in non_model_params}
+
+    def make_model(self, dataset: Optional[datasets.BaseDataset] = None, in_channels=None, window_size=None):
+        raise NotImplementedError()
+
+    def make_model_regularizer_function(self, model):
+        return None
+
+
+@dataclass
+class DNNModelOptions(ModelOptions):
+    activation_class: str = 'PReLU'
+    dropout: float = 0.
+    dropout_2d: bool = False
+    batch_norm: bool = False
+    print_details: bool = True
+
+
+@dataclass
+class CNNModelOptions(DNNModelOptions):
+    dense_width: Optional[int] = None
+    n_cnn_filters: Optional[int] = None
+    in_channel_dropout_rate: float = 0.
+
+    def make_model_kws(self, dataset: Optional[Type[datasets.BaseDataset]] = None,
+                       in_channels=None, window_size=None):
+        return dict(in_channels=int(dataset.get_feature_shape()[0]) if in_channels is None else in_channels,
+                    window_size=int(dataset.get_feature_shape()[-1]) if window_size is None else window_size,
+                    dropout=self.dropout,
+                    in_channel_dropout_rate=self.in_channel_dropout_rate,
+                    dropout2d=self.dropout_2d,
+                    batch_norm=self.batch_norm,
+                    dense_width=self.dense_width,
+                    n_cnn_filters=self.n_cnn_filters,
+                    activation_cls=self.activation_class,
+                    print_details=self.print_details)
+
+    def make_model(self, dataset: Optional[Type[datasets.BaseDataset]] = None,
+                   in_channels=None, window_size=None):
+        model_kws = self.make_model_kws(dataset, in_channels=in_channels, window_size=window_size)
+        return BaseCNN(**model_kws), model_kws
+
+
+@dataclass
+class BaseCNNModelOptions(CNNModelOptions):
+    model_name: str = "base_cnn"

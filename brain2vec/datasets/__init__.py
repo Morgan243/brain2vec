@@ -138,10 +138,6 @@ class BaseDataset(tdata.Dataset):
         return dataloader
 
     @classmethod
-    def with_env_key(cls, env_key):
-        pass
-
-    @classmethod
     def register_dataset(cls, dataset_name, dataset_cls):
         assert dataset_name not in cls._dataset_registry, f"{dataset_name} already in registry"
         cls._dataset_registry[dataset_name] = dataset_cls

@@ -24,7 +24,8 @@ class SemisupervisedCodebookTaskOptions(mxp.TaskOptions):
 class SemiSupervisedExperiment(mxp.Experiment):
     model: bmm.ModelOptions = subgroups(
         {"brain2vec": brain2vec.Brain2VecOptions,
-         'dummy': brain2vec.Brain2VecOptions},
+         #'dummy': brain2vec.Brain2VecOptions
+         },
         default=brain2vec.Brain2VecOptions()
     )
 
@@ -32,7 +33,7 @@ class SemiSupervisedExperiment(mxp.Experiment):
         {
             "hvs": harvard_sentences.HarvardSentencesDatasetOptions,#(pre_processing_pipeline='random_sample'),
              # Not actually tested
-             "nww": northwestern_words.NorthwesternWordsDatasetOptions
+             #"nww": northwestern_words.NorthwesternWordsDatasetOptions
         },
         default=harvard_sentences.HarvardSentencesDatasetOptions(pre_processing_pipeline='random_sample'))
 
@@ -105,7 +106,8 @@ class SemiSupervisedExperiment(mxp.Experiment):
             model_options=vars(self.model),
             task_options=vars(self.task),
             dataset_options=vars(self.dataset),
-            result_output_options=vars(self.result_output)
+            result_output_options=vars(self.result_output),
+            experiment_yaml=self.dumps_yaml()
         )
 
         # Grab the generated uid and name to use them as file names
