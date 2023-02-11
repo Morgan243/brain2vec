@@ -334,6 +334,7 @@ class DatasetOptions(JsonSerializable):
                 _train, _cv = _train.split_select_random_key_levels(**test_split_kws)
                 dataset_map.update(dict(train=_train, cv=_cv, test=_test))
             else:
+                logger.info("Using cv from train set")
                 dataset_map.update(dict(train=_train, cv=_test))
 
         # Otherwise, brute force split the window samples using size of data and dataset.select()
@@ -359,6 +360,7 @@ class DatasetOptions(JsonSerializable):
         # Test data is not required, but must be loaded with same selection of sensors as train data
         # TODO / Note: this could have a complex interplay if used tih flatten sensors or 2d data
         if test_kws['patient_tuples'] is not None:
+            logger.info(f"Loading test set using KWS: {test_kws}")
             dataset_map['test'] = dataset_cls(sensor_columns=train_dataset.selected_columns, **test_kws)
         else:
             logger.info(" - No test datasets provided - ")
@@ -373,15 +375,6 @@ class DatasetOptions(JsonSerializable):
         if isinstance(additional_transforms, list):
             dataset_map = {k: v.append_transform(additional_transforms)
                            for k, v in dataset_map.items()}
-
-#        import functools
-#        cache = True
-#        if cache:
-#            logger.info("EXPERIMENTAL CACHING ENABLED")
-#            for k, v in dataset_map.items():
-#                v.__orig_getitem__ = v.__getitem__
-#                v.__getitem__ = functools.cache(v.__getitem__)
-
 
         dataloader_map = {k: v.to_dataloader(**dl_kws)
                           for k, v in dataset_map.items()}
