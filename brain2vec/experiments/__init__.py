@@ -1,23 +1,14 @@
 import pandas as pd
-import numpy as np
-import matplotlib
-from pathlib import Path
-from matplotlib import pyplot as plt
 from glob import glob
 import os
 import json
-
+from dataclasses import dataclass
+from simple_parsing.helpers import JsonSerializable
+from typing import Optional
 
 from tqdm.auto import tqdm
 import torch
-
-from pprint import pprint
-
-# TODO: Swap these out
-from ecog_speech import datasets, feature_processing, experiments, utils
-from ecog_speech import models
-from ecog_speech.models import base
-
+from brain2vec import models
 
 
 def load_results_to_frame(p, config_params=None):
@@ -35,8 +26,8 @@ def load_results_to_frame(p, config_params=None):
     ####
     if config_params is None:
         return results_df
-    elif isinstance(config_params, bool) and config_params:
-        config_params = [n for n in experiments.all_model_hyperparam_names if n in results_df.columns.values]
+    #elif isinstance(config_params, bool) and config_params:
+    #    config_params = [n for n in experiments.all_model_hyperparam_names if n in results_df.columns.values]
 
     print("All config params to consider: " + ", ".join(config_params))
     #config_params = default_config_params if config_params is None else config_params
@@ -90,3 +81,16 @@ def load_model_from_results(results, base_model_path=None, **kws_update):
     return model
     #model.to(options.device)
 
+
+@dataclass
+class ResultParsingOptions(JsonSerializable):
+    result_file: str = None
+    print_results: bool = False
+    base_model_path: Optional[str] = None
+    eval_sets: Optional[str] = None
+
+    eval_win_step_size: int = 1
+    pred_inspect_eval: bool = False
+    base_output_path: Optional[str] = None
+    eval_filter: Optional[str] = None
+    device: str = 'cuda:0'

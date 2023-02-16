@@ -13,29 +13,21 @@ from tqdm.auto import tqdm
 import numpy as np
 import pandas as pd
 from typing import ClassVar, Union
-import seaborn as sns
 
 import attr
 
-
 from mmz import utils
-#from brain2vec.models import base
 
-#from ecog_speech.models.sinc_ieeg import make_model
-#from ecog_speech.experiments import base as bxp
 from mmz import experiments as bxp
 from mmz import models as zm
 
-#from ecog_speech.models import base_fine_tuners as base_ft
 from brain2vec import models as bmp
-
-#from ecog_speech import datasets
 from brain2vec import datasets
-#from ecog_speech import visuals as viz
+from brain2vec import experiments
 from dataclasses import dataclass
 import json
 from simple_parsing import subgroups
-from ecog_speech import result_parsing
+#from ecog_speech import result_parsing
 
 from brain2vec.datasets.harvard_sentences import HarvardSentencesDatasetOptions, HarvardSentences
 
@@ -45,7 +37,7 @@ logger = utils.get_logger(__name__)
 
 # Override to make the result parsing options optional in this script
 @dataclass
-class TransferLearningResultParsingOptions(result_parsing.ResultParsingOptions):
+class TransferLearningResultParsingOptions(experiments.ResultParsingOptions):
     result_file: Optional[str] = None
     print_results: Optional[bool] = False
 
@@ -168,43 +160,6 @@ class PretrainParticipantIdentificationFineTuningTask(RegionDetectionFineTuningT
                                                       test_p_tuples=debias_test_neg_set + debias_test_pos_set,
                                                       test_data_kws=dict(label_reindex_map=test_label_reindex_map))
 
-        ## -- old
-#        pretraining_sets = kws.pop('train_p_tuples')
-#        pretrain_ixes = set(range(len(pretraining_sets)))
-#
-#        pretraining_holdout_sets = list(set(all_sets) - set(pretraining_sets))
-#        pretrain_holdout_ixes = set(range(len(pretraining_holdout_sets)))
-#
-#
-#        # Train data
-#        train_unseen_ixes = set(np.random.choice(list(pretrain_holdout_ixes), 2, replace=False))
-#
-#        train_seen_ixes = set(np.random.choice(list(pretrain_ixes), 2, replace=False))
-#
-#        train_dataset_tuples = [pretraining_holdout_sets[_ix] for _ix in train_unseen_ixes]
-#        train_dataset_tuples += [pretraining_sets[_ix] for _ix in train_seen_ixes]
-#
-#        train_label_reindex_map = dict()
-#        train_label_reindex_map.update({pretraining_holdout_sets[_ix][1]: 0 for _ix in train_unseen_ixes})
-#        train_label_reindex_map.update({pretraining_sets[_ix][1]: 1 for _ix in train_seen_ixes})
-#        logger.info(f"Label reindex map created: {train_label_reindex_map}")
-#
-#        # Test data
-#        test_unseen_ixes = pretrain_holdout_ixes - train_unseen_ixes
-#        test_seen_ixes = pretrain_ixes - train_seen_ixes
-#        test_dataset_tuples = [pretraining_holdout_sets[_ix] for _ix in test_unseen_ixes]
-#        test_dataset_tuples += [pretraining_sets[_ix] for _ix in test_seen_ixes]
-#
-#        test_label_reindex_map = dict()
-#        test_label_reindex_map.update({pretraining_holdout_sets[_ix][1]: 0 for _ix in test_unseen_ixes})
-#        test_label_reindex_map.update({pretraining_sets[_ix][1]: 1 for _ix in test_seen_ixes})
-#        logger.info(f"Label reindex map created: {test_label_reindex_map}")
-#
-#        return self.dataset.make_datasets_and_loaders(**kws, train_p_tuples=train_dataset_tuples,
-#                                                      train_data_kws=dict(label_reindex_map=train_label_reindex_map),
-#                                                      test_p_tuples=test_dataset_tuples,
-#                                                      test_data_kws=dict(label_reindex_map=test_label_reindex_map))
-
 
 @dataclass
 class WordDetectionFineTuningTask(bxp.TaskOptions):
@@ -238,7 +193,6 @@ class WordDetectionFineTuningTask(bxp.TaskOptions):
                                                       test_split_kws=test_split_kws,
                                                       #split_cv_from_test=False,
                                                       **kws)
-
 
 
 @dataclass

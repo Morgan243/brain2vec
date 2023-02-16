@@ -44,7 +44,7 @@ class SemiSupervisedExperiment(mxp.Experiment):
          "dummy": SemisupervisedCodebookTaskOptions},
         default=SemisupervisedCodebookTaskOptions())
 
-    skip_if_results_exists_in: bool = None
+    skip_if_results_exists_in: bool = False
 
     def check_if_results_exist_in(self, check_existing_p):
         import os
@@ -55,16 +55,20 @@ class SemiSupervisedExperiment(mxp.Experiment):
 
         datasets_df = results_df.dataset_options.apply(pd.Series)
 
-        this_train_sets = set(harvard_sentences.HarvardSentences.make_tuples_from_sets_str(self.dataset.test_sets))
+        this_train_sets = set(harvard_sentences.HarvardSentences.make_tuples_from_sets_str(self.dataset.train_sets))
 
         def check_for_match(train_sets_str):
             train_sets = set(harvard_sentences.HarvardSentences.make_tuples_from_sets_str(train_sets_str))
             return this_train_sets == train_sets
 
-        matching_train_set = datasets_df.train_set.apply(check_for_match)
+        print("This train set: " + str(this_train_sets))
+        print(f"Checking sets: {' | '.join(datasets_df.train_sets.unique())}")
+        matching_train_set = datasets_df.train_sets.apply(check_for_match)
         if matching_train_set.any():
             print(f"Found matching: {results_df[matching_train_set].to_dict()}")
             return True
+        else:
+            print("No matching found")
         return False
 
     def run(self):

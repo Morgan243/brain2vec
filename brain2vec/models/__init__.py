@@ -10,6 +10,18 @@ from mmz.models import *
 from typing import Optional, Dict, List, Tuple
 
 
+def make_model(options=None, nww=None, model_name=None, model_kws=None, print_details=True):
+    from brain2vec.models import brain2vec
+
+    if model_name == 'cog2vec' or model_name == 'brain2vec':
+        m = brain2vec.Brain2Vec(**model_kws)
+        m_kws = model_kws
+    else:
+        raise ValueError(f"Don't know how to load {model_name}")
+
+    return m, m_kws
+
+
 @with_logger
 @attr.attrs
 class Trainer:
@@ -36,6 +48,8 @@ class Trainer:
     cv_data_gen = attr.ib(None)
     epochs_trained = attr.ib(0)
     device = attr.ib(torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
+    cache_dataloaders = attr.ib(True)
+    compile_models = attr.ib(True)
 
     weights_init_f = attr.ib(None)
 
@@ -56,7 +70,19 @@ class Trainer:
         return cls
 
     def __attrs_post_init__(self):
+        if self.cache_dataloaders:
+            self.logger.info("Caching with torch data in_memory_cach() unlimited memory")
+            from torchdata.datapipes.iter import IterableWrapper
+            self.train_data_gen = IterableWrapper(self.train_data_gen).in_memory_cache()
+            if self.cv_data_gen is not None:
+                self.cv_data_gen = IterableWrapper(self.cv_data_gen).in_memory_cache()
+
         self.model_map = {k: v.to(self.device) for k, v in self.model_map.items()}
+        if self.compile_models and hasattr(torch, 'compile'):
+            #torch._dynamo.config.suppress_errors = True
+            #torch._dynamo.config.verbose = True
+            self.model_map = {k: torch.compile(m) for k, m in self.model_map.items()}
+
 
         self.scheduler_map = dict()
         # Go throught the provided models to init, init their optimizers with their parameters, and setup their scheduler
@@ -313,7 +339,7 @@ class Trainer:
         """
         model_in_training = model.training
         if device:
-            model.to(device)
+            model = model.to(device)
 
         model.eval()
         output_map = dict()

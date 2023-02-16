@@ -18,6 +18,8 @@ os.environ['WANDB_CONSOLE'] = 'off'
 
 logger = utils.get_logger(__name__)
 
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 @dataclass
 class MultiSensorOptions:
@@ -186,7 +188,7 @@ class DatasetOptions(JsonSerializable):
     # power_q: float = 0.7
     random_targets: bool = False
     pin_memory: bool = False
-    dl_prefetch_factor: int = 2
+    dl_prefetch_factor: Optional[int] = None
 
     n_dl_workers: int = 4
     n_dl_eval_workers: int = 6
@@ -273,8 +275,10 @@ class DatasetOptions(JsonSerializable):
 
         dl_kws = dict(num_workers=self.n_dl_workers, batch_size=self.batch_size,
                       batches_per_epoch=self.batches_per_epoch,
-                      pin_memory=self.pin_memory, prefetch_factor=self.dl_prefetch_factor,
+                      pin_memory=self.pin_memory,
                       shuffle=False, random_sample=True)
+        if self.dl_prefetch_factor is not None:
+            dl_kws['prefetch_factor'] = self.dl_prefetch_factor
 
         logger.info(f"dataloader Keyword arguments: {dl_kws}")
 
@@ -283,8 +287,9 @@ class DatasetOptions(JsonSerializable):
                            batches_per_epoch=self.batches_per_eval_epoch,
                            shuffle=self.batches_per_eval_epoch is None,
                            pin_memory=self.pin_memory,
-                           prefetch_factor=self.dl_prefetch_factor,
                            random_sample=self.batches_per_eval_epoch is not None)
+        if self.dl_prefetch_factor is not None:
+            eval_dl_kws['prefetch_factor'] = self.dl_prefetch_factor
 
         dataset_map = dict()
         logger.info("Using dataset class: %s" % str(dataset_cls))

@@ -20,18 +20,30 @@ DEFAULT_CLI_ARGS=" --dataset.flatten_sensors_to_samples=True \
 --dataset.pre_processing_pipeline=random_sample \
 --result_dir=$RESULT_PATH --save_model_path=$RESULT_PATH/models "
 
+N_SPLITS=6
 
-pretraining_sets=("UCSD-4,UCSD-5,UCSD-10" "UCSD-4,UCSD-5,UCSD-18" "UCSD-4,UCSD-5,UCSD-19" "UCSD-4,UCSD-5,UCSD-22" "UCSD-4,UCSD-5,UCSD-28" "UCSD-4,UCSD-10,UCSD-18" "UCSD-4,UCSD-10,UCSD-19" "UCSD-4,UCSD-10,UCSD-22" "UCSD-4,UCSD-10,UCSD-28" "UCSD-4,UCSD-18,UCSD-19" "UCSD-4,UCSD-18,UCSD-22" "UCSD-4,UCSD-18,UCSD-28" "UCSD-4,UCSD-19,UCSD-22" "UCSD-4,UCSD-19,UCSD-28" "UCSD-4,UCSD-22,UCSD-28" "UCSD-5,UCSD-10,UCSD-18" "UCSD-5,UCSD-10,UCSD-19" "UCSD-5,UCSD-10,UCSD-22" "UCSD-5,UCSD-10,UCSD-28" "UCSD-5,UCSD-18,UCSD-19" "UCSD-5,UCSD-18,UCSD-22" "UCSD-5,UCSD-18,UCSD-28" "UCSD-5,UCSD-19,UCSD-22" "UCSD-5,UCSD-19,UCSD-28" "UCSD-5,UCSD-22,UCSD-28" "UCSD-10,UCSD-18,UCSD-19" "UCSD-10,UCSD-18,UCSD-22" "UCSD-10,UCSD-18,UCSD-28" "UCSD-10,UCSD-19,UCSD-22" "UCSD-10,UCSD-19,UCSD-28" "UCSD-10,UCSD-22,UCSD-28" "UCSD-18,UCSD-19,UCSD-22" "UCSD-18,UCSD-19,UCSD-28" "UCSD-18,UCSD-22,UCSD-28" "UCSD-19,UCSD-22,UCSD-28")
+for ((i = 0 ; i < $N_SPLITS ; i++)); do
+  echo "Running $i index"
+  export N_SPLITS
+  export THIS_SPLIT=$i
+  export RESULT_PATH
+  if [ $i -gt 2 ]
+  then
+    export DEVICE="cuda:0"
+  else
+    export DEVICE="cuda:2"
+  fi
+
+  screen -S "split_$i" -dm bash -c 'bash --init-file <(./CMD.sh)'
+done
+#pretraining_sets=("UCSD-4,UCSD-5,UCSD-10" "UCSD-4,UCSD-5,UCSD-18" "UCSD-4,UCSD-5,UCSD-19" "UCSD-4,UCSD-5,UCSD-22" "UCSD-4,UCSD-5,UCSD-28" "UCSD-4,UCSD-10,UCSD-18" "UCSD-4,UCSD-10,UCSD-19" "UCSD-4,UCSD-10,UCSD-22" "UCSD-4,UCSD-10,UCSD-28" "UCSD-4,UCSD-18,UCSD-19" "UCSD-4,UCSD-18,UCSD-22" "UCSD-4,UCSD-18,UCSD-28" "UCSD-4,UCSD-19,UCSD-22" "UCSD-4,UCSD-19,UCSD-28" "UCSD-4,UCSD-22,UCSD-28" "UCSD-5,UCSD-10,UCSD-18" "UCSD-5,UCSD-10,UCSD-19" "UCSD-5,UCSD-10,UCSD-22" "UCSD-5,UCSD-10,UCSD-28" "UCSD-5,UCSD-18,UCSD-19" "UCSD-5,UCSD-18,UCSD-22" "UCSD-5,UCSD-18,UCSD-28" "UCSD-5,UCSD-19,UCSD-22" "UCSD-5,UCSD-19,UCSD-28" "UCSD-5,UCSD-22,UCSD-28" "UCSD-10,UCSD-18,UCSD-19" "UCSD-10,UCSD-18,UCSD-22" "UCSD-10,UCSD-18,UCSD-28" "UCSD-10,UCSD-19,UCSD-22" "UCSD-10,UCSD-19,UCSD-28" "UCSD-10,UCSD-22,UCSD-28" "UCSD-18,UCSD-19,UCSD-22" "UCSD-18,UCSD-19,UCSD-28" "UCSD-18,UCSD-22,UCSD-28" "UCSD-19,UCSD-22,UCSD-28")
 
 # shellcheck disable=SC2068
-for set_str in ${pretraining_sets[@]}; do
-  echo $set_str
-  eval "$EXEC $DEFAULT_CLI_ARGS --dataset.train_sets=$set_str"
-  #for ((i = 0 ; i < 3 ; i++)); do
-  #  echo "Welcome $i times."
-  #  eval "$EXEC $DEFAULT_CLI_ARGS --dataset.train_sets=$set_str --dataset.test_sets=$i"
-  #done
-done
+#for set_str in ${pretraining_sets[@]}; do
+#  echo $set_str
+#  eval "$EXEC $DEFAULT_CLI_ARGS --dataset.train_sets=$set_str"
+#
+#done
 
 #A="UCSD-4"
 #B="UCSD-5"
