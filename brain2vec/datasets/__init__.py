@@ -116,10 +116,10 @@ class BaseDataset(tdata.Dataset):
 
     _dataset_registry: ClassVar[Dict] = dict()
 
-    def to_dataloader(self, batch_size=64, num_workers=2,
+    @classmethod
+    def make_dataloader(cls, dset, batch_size=64, num_workers=2,
                       batches_per_epoch=None, random_sample=True,
                       shuffle=False, pin_memory=False, **kwargs):
-        dset = self
         if random_sample:
             if batches_per_epoch is None:
                 # batches_per_epoch = len(dset) // batch_size
@@ -138,6 +138,13 @@ class BaseDataset(tdata.Dataset):
                                           pin_memory=pin_memory,
                                           **kwargs)
         return dataloader
+
+    def to_dataloader(self, batch_size=64, num_workers=2,
+                      batches_per_epoch=None, random_sample=True,
+                      shuffle=False, pin_memory=False, **kwargs):
+        return self.make_dataloader(self, batch_size=batch_size, num_workers=num_workers,
+                                    batches_per_epoch=batches_per_epoch, random_sample=random_sample,
+                                    shuffle=shuffle, pin_memory=pin_memory, **kwargs)
 
     @classmethod
     def register_dataset(cls, dataset_name, dataset_cls):
@@ -192,6 +199,28 @@ class DatasetOptions(JsonSerializable):
 
     n_dl_workers: int = 4
     n_dl_eval_workers: int = 6
+
+    def make_eval_dl_kws(self):
+        #self.dataset_map, self.dl_map, self.eval_dl_map
+        eval_dl_kws = dict(num_workers=self.n_dl_eval_workers,
+                           batch_size=self.batch_size if self.batch_size_eval is None else self.batch_size_eval,
+                           batches_per_epoch=self.batches_per_eval_epoch,
+                           shuffle=self.batches_per_eval_epoch is None,
+                           pin_memory=self.pin_memory,
+                           random_sample=self.batches_per_eval_epoch is not None)
+        if self.dl_prefetch_factor is not None:
+            eval_dl_kws['prefetch_factor'] = self.dl_prefetch_factor
+
+        return eval_dl_kws
+
+    def make_dl_kws(self):
+        dl_kws = dict(num_workers=self.n_dl_workers, batch_size=self.batch_size,
+                      batches_per_epoch=self.batches_per_epoch,
+                      pin_memory=self.pin_memory,
+                      shuffle=False, random_sample=True)
+        if self.dl_prefetch_factor is not None:
+            dl_kws['prefetch_factor'] = self.dl_prefetch_factor
+        return dl_kws
 
     def make_datasets_and_loaders(self, dataset_cls=None, base_data_kws=None,
                                   train_data_kws=None, cv_data_kws=None, test_data_kws=None,
@@ -273,24 +302,10 @@ class DatasetOptions(JsonSerializable):
         if test_data_kws is not None:
             test_kws.update(test_data_kws)
 
-        dl_kws = dict(num_workers=self.n_dl_workers, batch_size=self.batch_size,
-                      batches_per_epoch=self.batches_per_epoch,
-                      pin_memory=self.pin_memory,
-                      shuffle=False, random_sample=True)
-        if self.dl_prefetch_factor is not None:
-            dl_kws['prefetch_factor'] = self.dl_prefetch_factor
-
+        dl_kws = self.make_dl_kws()
         logger.info(f"dataloader Keyword arguments: {dl_kws}")
 
-        eval_dl_kws = dict(num_workers=self.n_dl_eval_workers,
-                           batch_size=self.batch_size if self.batch_size_eval is None else self.batch_size_eval,
-                           batches_per_epoch=self.batches_per_eval_epoch,
-                           shuffle=self.batches_per_eval_epoch is None,
-                           pin_memory=self.pin_memory,
-                           random_sample=self.batches_per_eval_epoch is not None)
-        if self.dl_prefetch_factor is not None:
-            eval_dl_kws['prefetch_factor'] = self.dl_prefetch_factor
-
+        eval_dl_kws = self.make_eval_dl_kws()
         dataset_map = dict()
         logger.info("Using dataset class: %s" % str(dataset_cls))
 

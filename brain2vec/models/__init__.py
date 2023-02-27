@@ -56,6 +56,7 @@ class Trainer:
     epoch_cb_history = attr.ib(attr.Factory(list), init=False)
     batch_cb_history = attr.ib(attr.Factory(list), init=False)
     model_regularizer = attr.ib(None)
+    weight_decay = attr.ib(0)
 
     lr_adjust_on_cv_loss = attr.ib(False)
     lr_adjust_on_plateau_kws = attr.ib(None)
@@ -96,10 +97,12 @@ class Trainer:
                 if self.default_optim_cls == torch.optim.Adam:
                     self.opt_map[k] = self.default_optim_cls(m.parameters(),
                                                        lr=self.learning_rate,
+                                                             weight_decay=self.weight_decay,
                                                              #weight_decay=0.9,
                                                        betas=(self.beta1, 0.999))
                 elif self.default_optim_cls == torch.optim.RMSprop:
                     self.opt_map[k] = self.default_optim_cls(m.parameters(),
+                                                             weight_decay=self.weight_decay,
                                                              lr=self.learning_rate)
 
             # Turn on LR scheduler and (no specific model to schedule or this is a specific model to adjust)
@@ -346,7 +349,7 @@ class Trainer:
         with torch.no_grad():
             for dname, dl in dl_map.items():
                 preds_l, actuals_l, criterion_l = list(), list(), list()
-                dset = dl.dataset
+                #dset = dl.dataset
 
                 #if hasattr(dset, 'data_maps'):
                 #    assert len(dset.data_maps) == 1

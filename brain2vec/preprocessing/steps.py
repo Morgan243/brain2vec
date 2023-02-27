@@ -1,5 +1,4 @@
 from sklearn.base import BaseEstimator, TransformerMixin
-import torchaudio
 import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
@@ -271,6 +270,8 @@ class ExtractMFCC(DictTrf):
         fs = data_map[self.audio_fs_key]
 
         if not hasattr(self, 'melspec_trf'):
+            import torchaudio
+
             self.melspec_trf = torchaudio.transforms.MelSpectrogram(fs,
                                                                     n_fft=self.n_fft,
                                                                     win_length=self.win_length,

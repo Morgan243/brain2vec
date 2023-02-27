@@ -670,29 +670,7 @@ class MultiChannelBrain2Vec(torch.nn.Module):
             )
             if self.outputs == 1:
                 self.classifier_head = torch.nn.Sequential(torch.nn.Sigmoid())
-#            self.hidden_encoder = torch.nn.Sequential(
-#                torch.nn.LazyBatchNorm1d(momentum=0.2, track_running_stats=False, affine=True),
-#                torch.nn.Dropout(self.dropout_rate),
-#                torch.nn.LazyLinear(self.outputs * 4),
-#                torch.nn.LeakyReLU(),
-#                torch.nn.LazyBatchNorm1d(momentum=0.2, track_running_stats=False, affine=True),
-#                torch.nn.Dropout(self.dropout_rate),
-#                torch.nn.LazyLinear(self.outputs * 2),
-#                torch.nn.LeakyReLU(),
-#                torch.nn.LazyLinear(self.outputs),
-#
-#                # torch.nn.BatchNorm1d(self.lin_dim, momentum=0.2, track_running_stats=False),
-#                #torch.nn.Dropout(self.dropout_rate),
-#                #torch.nn.Linear(self.lin_dim, self.lin_dim),
-#                #torch.nn.BatchNorm1d(self.lin_dim),
-#                #torch.nn.LeakyReLU(),
-#                #torch.nn.Dropout(self.dropout_rate),
-#                #torch.nn.Linear(self.lin_dim, self.lin_dim),
-#                #torch.nn.LeakyReLU(),
-#                #torch.nn.Dropout(self.dropout_rate),
-#                #torch.nn.Linear(self.lin_dim, self.lin_dim),
-#                #torch.nn.LeakyReLU(),
-#            )
+
             self.feat_arr_reshape = (-1, self.h_dim * self.T)
             #self.classifier_head = torch.nn.Sequential(torch.nn.Sigmoid() if self.outputs == 1
             #                                           else torch.nn.Identity())
@@ -732,6 +710,11 @@ class MultiChannelBrain2Vec(torch.nn.Module):
 
         return self.classifier_head(lin_in_arr)
 
+#    @classmethod
+#    def as_transform(cls):
+#        kws = dict()
+#        def multi_channel_brain2vec_trasnform():
+#            kws['signal_arr'] = torch.from_numpy(np_ecog_arr).float()
 
 @attr.s
 class Brain2VecTrainer(Trainer):

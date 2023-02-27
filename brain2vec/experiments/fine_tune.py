@@ -25,6 +25,7 @@ from brain2vec import models as bmp
 from brain2vec import datasets
 from brain2vec import experiments
 from dataclasses import dataclass
+from brain2vec.models import base_fine_tuners as ft_models
 import json
 from simple_parsing import subgroups
 #from ecog_speech import result_parsing
@@ -66,8 +67,8 @@ class SpeechDetectionFineTuningTask(bxp.TaskOptions):
 class RegionDetectionFineTuningTask(bxp.TaskOptions):
     task_name: str = "region_classification_fine_tuning"
     dataset: datasets.DatasetOptions = HarvardSentencesDatasetOptions(train_sets='AUTO-REMAINING',
-                                                                               flatten_sensors_to_samples=False,
-                                                                               pre_processing_pipeline='region_classification')
+                                                                      flatten_sensors_to_samples=False,
+                                                                      pre_processing_pipeline='region_classification')
     method: str = '2d_linear'
 
     squeeze_target: ClassVar[bool] = True
@@ -108,41 +109,40 @@ class PretrainParticipantIdentificationFineTuningTask(RegionDetectionFineTuningT
         dataset_cls = datasets.BaseDataset.get_dataset_by_name(self.dataset.dataset_name)
         all_sets = dataset_cls.make_tuples_from_sets_str('*')
 
-        # Test tuple must be provided - which patient's data is the positive holdout in the test set
-        #test_positive_ixes = kws.pop('test_p_tuples')
+        # Assumes set to AUTO-PRETRAINING, so the train tuples are all the sets that the loaded model was pretrained on
         all_true_pos_set = kws.pop('train_p_tuples')
+        # Thus, the sets not pretrained on are the true negatives
         all_true_neg_set = list(set(all_sets) - set(all_true_pos_set))
 
         debias_train_pos_set = all_true_pos_set
-        #debias_train_neg_set = all_true_neg_set
 
-        # Was a test set specified?
+        # Determine the test set's single positive participant set - the attacker will not train on this member
+        # Was a test set specified in the options directly?
         if self.dataset.test_sets is not None and self.dataset.test_sets != '':
             # If an integer
             if self.dataset.test_sets.isdigit():
                 true_pos_ix_of_test = [int(self.dataset.test_sets)]
                 self.dataset.test_sets = None
+            else:
+                raise ValueError(f"Dont understand test set - it wasn't an integet: {self.dataset.test_sets}")
         # No test set specified, so select a random one from true positive set
         elif self.dataset.test_sets is None:
             true_pos_ix_of_test = np.random.choice(len(all_true_pos_set), 1).tolist()
         else:
             raise ValueError(f'Dont understand test set: {self.dataset.test_sets}')
 
-        assert all(_ix < len(all_true_pos_set) for _ix in true_pos_ix_of_test)
-        assert all(_ix >= 0 for _ix in true_pos_ix_of_test)
+        assert all(_ix < len(all_true_pos_set) for _ix in true_pos_ix_of_test), "Test positive outside ix range of pos"
+        assert all(_ix >= 0 for _ix in true_pos_ix_of_test), "Test pos is negative...???"
 
-        # Pull out the select true positive tuple to be in the test set
-        debias_test_pos_set= [all_true_pos_set[_ix] for _ix in true_pos_ix_of_test]
+        # Pull out the selected true positive tuple to be in the test set
+        debias_test_pos_set = [all_true_pos_set[_ix] for _ix in true_pos_ix_of_test]
+        # Training positives are all the positives that are not in the test set
         debias_train_pos_set = [t for t in debias_train_pos_set if t not in debias_test_pos_set]
-        # Remove the selected positive test from the training positives
-        #debias_train_pos_set.remove(pos_test_tuple)
 
         # Take half of true negatives (i.e. not seen in pretraining procedure
         true_neg_ix_of_test = np.random.choice(len(all_true_neg_set), len(all_true_neg_set) // 2).tolist()
-        #true_neg_ix_of_train = list(set(range(len(all_true_neg_set))) - set(true_neg_ix_of_test))
         debias_test_neg_set = [all_true_neg_set[_ix] for _ix in true_neg_ix_of_test]
         debias_train_neg_set = [t for t in all_true_neg_set if t not in debias_test_neg_set]
-        #debias_train_neg_set = [all_true_neg_set[_ix] for _ix in true_neg_ix_of_train]
 
         train_label_reindex_map = dict()
         train_label_reindex_map.update({t[1]: 0 for t in debias_train_neg_set})
@@ -159,6 +159,8 @@ class PretrainParticipantIdentificationFineTuningTask(RegionDetectionFineTuningT
                                                       train_data_kws=dict(label_reindex_map=train_label_reindex_map),
                                                       test_p_tuples=debias_test_neg_set + debias_test_pos_set,
                                                       test_data_kws=dict(label_reindex_map=test_label_reindex_map))
+
+
 
 
 @dataclass
@@ -241,22 +243,24 @@ class FineTuningModel(bmp.DNNModelOptions):
                     torch.nn.Linear(h_size, h_size),
                     torch.nn.LeakyReLU(),
                     torch.nn.Linear(h_size, fine_tuning_target_shape),
-                    # torch.nn.Sigmoid()
+                    torch.nn.Sigmoid()
                 ])
-                # nn.init.xavier_uniform_(classifier_head.weight)
+            else:
+                classifier_head = self.classifier_head
 
-            ft_model = base_ft.FineTuner(pre_trained_model=m, output_model=classifier_head,
-                                         pre_trained_model_forward_kws=dict(features_only=True, mask=False),
-                                         pre_trained_model_output_key='x',
-                                         freeze_pre_train_weights=self.freeze_pretrained_weights)
+            ft_model = ft_models.FineTuner(pre_trained_model=m, output_model=classifier_head,
+                                           pre_trained_model_forward_kws=dict(features_only=True, mask=False),
+                                           pre_trained_model_output_key='x',
+                                           freeze_pre_train_weights=self.freeze_pretrained_weights)
 
         elif '2d_' in self.fine_tuning_method:
             if dataset is None:
                 raise ValueError(f"A dataset is required for '2d_*' methods in order to see num sensors")
-            from ecog_speech.models import base_transformers
+            #from ecog_speech.models import base_transformers
+            from brain2vec.models.brain2vec import MultiChannelBrain2Vec
 
             hidden_enc = 'transformer' if self.fine_tuning_method == '2d_transformers' else 'linear'
-            ft_model = base_transformers.MultiChannelCog2Vec((n_pretrained_input_channels, n_pretrained_input_samples),
+            ft_model = MultiChannelBrain2Vec((n_pretrained_input_channels, n_pretrained_input_samples),
                                                              pretrained_model, outputs=fine_tuning_target_shape,
                                                              hidden_encoder=hidden_enc,
                                                              dropout=self.dropout, batch_norm=self.batch_norm,
@@ -271,13 +275,14 @@ class FineTuningModel(bmp.DNNModelOptions):
 class FineTuningExperiment(bxp.Experiment):
     pretrained_result_input: bxp.ResultInputOptions = None
     task: SpeechDetectionFineTuningTask = subgroups(
-        {'speech_detection': SpeechDetectionFineTuningTask(),
-         'region_detection': RegionDetectionFineTuningTask(),
-         'word_detection': WordDetectionFineTuningTask(),
-         'participant_detection': ParticipantIdentificationFineTuningTask(),
-         'data_leakage': PretrainParticipantIdentificationFineTuningTask()
+        {'speech_detection': SpeechDetectionFineTuningTask,
+         'region_detection': RegionDetectionFineTuningTask,
+         'word_detection': WordDetectionFineTuningTask,
+         'participant_detection': ParticipantIdentificationFineTuningTask,
+         'data_leakage': PretrainParticipantIdentificationFineTuningTask
          },
-        default=RegionDetectionFineTuningTask())
+        default='region_detection')
+        #default=RegionDetectionFineTuningTask())
     model: FineTuningModel = FineTuningModel()
 
     inspection_plot_path: Optional[str] = None

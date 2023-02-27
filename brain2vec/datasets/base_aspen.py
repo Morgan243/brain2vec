@@ -58,6 +58,9 @@ class BaseASPEN(BaseDataset):
     selected_flat_indices = attr.ib(None)
     transform = attr.ib(None)
     transform_l = attr.ib(attr.Factory(list))
+    all_input_transform = attr.ib(None)
+    all_input_transform_l = attr.ib(attr.Factory(list))
+
     target_transform = attr.ib(None)
     target_transform_l = attr.ib(attr.Factory(list))
 
@@ -414,7 +417,8 @@ class BaseASPEN(BaseDataset):
                               ix_k, transform=self.transform,
                               channel_select=selected_channels,
                               index_loc=True,
-                              extra_output_keys=self.extra_output_keys)
+                              extra_output_keys=self.extra_output_keys,
+                              all_input_transform=self.all_input_transform)
         )
 
         so.update(
@@ -498,10 +502,14 @@ class BaseASPEN(BaseDataset):
 
         return self
 
-    def append_transform(self, transform):
+    def append_transform(self, transform, all_input_transform: bool = False):
         transform = [transform] if not isinstance(transform, list) else transform
-        self.transform_l += transform
-        self.transform = torchvision.transforms.Compose(self.transform_l)
+        if all_input_transform:
+            self.all_input_transform_l += transform
+            self.all_input_transform = torchvision.transforms.Compose(self.all_input_transform_l)
+        else:
+            self.transform_l += transform
+            self.transform = torchvision.transforms.Compose(self.transform_l)
         return self
 
     def append_target_transform(self, transform):
@@ -632,7 +640,7 @@ class BaseASPEN(BaseDataset):
 
     @staticmethod
     def get_features(data_map, ix, label=None, transform=None, index_loc=False, signal_key='signal',
-                     channel_select=None, extra_output_keys=None):
+                     channel_select=None, extra_output_keys=None, all_input_transform=None):
         # pull out signal and begin building dictionary of arrays to reutrn
         signal_df = data_map[signal_key]
 
@@ -665,6 +673,10 @@ class BaseASPEN(BaseDataset):
                 #                if not isinstance(channel_select[0], int):
                 #                    print("WHAT")
                 kws['sensor_ras_coord_arr'] = kws['sensor_ras_coord_arr'][channel_select].unsqueeze(0)
+
+        if all_input_transform is not None:
+            # print("Apply transform to shape of " + str(np_ecog_arr.shape))
+            kws = all_input_transform(kws)
 
         return kws
 
