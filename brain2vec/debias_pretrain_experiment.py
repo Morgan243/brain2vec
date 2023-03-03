@@ -49,13 +49,13 @@ from mmz.experiments import Experiment
 from itertools import combinations
 from mmz.experiments import ResultOptions
 from time import sleep
+from pathlib import Path
 
 logger = get_logger(__name__)
 
 RESULT_PATH = os.environ.get('RESULT_PATH')
 MODEL_PATH = os.path.join(RESULT_PATH, 'models')
 
-from pathlib import Path
 #creating a new directory called pythondirectory
 Path(RESULT_PATH).mkdir(parents=True, exist_ok=True)
 Path(MODEL_PATH).mkdir(parents=True, exist_ok=True)

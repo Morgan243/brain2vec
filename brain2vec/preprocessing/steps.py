@@ -30,6 +30,7 @@ class ParseTimeSeriesArrToFrame(DictTrf):
     array_key = attr.ib()
     fs_key = attr.ib()
     default_fs = attr.ib()
+    slice_selection = attr.ib(None)
     dtype = attr.ib(None)
     reshape = attr.ib(None)
     output_key = attr.ib(None)
@@ -51,9 +52,9 @@ class ParseTimeSeriesArrToFrame(DictTrf):
         # Sometimes it's a scalar value inside some arrays
         if isinstance(_fs, np.ndarray):
             fs = data_map[self.fs_key].reshape(-1)[0]
-
-        # Otherwise, just make sure it is integer
-        fs = int(_fs)
+        else:
+            # Otherwise, just make sure it is integer
+            fs = int(_fs)
 
         arr = data_map[self.array_key]
 
@@ -65,6 +66,10 @@ class ParseTimeSeriesArrToFrame(DictTrf):
             arr_df = pd.Series(arr, index=ix, dtype=self.dtype, name=arr_key).sort_index()
         else:
             arr_df = pd.DataFrame(arr, index=ix, dtype=self.dtype).sort_index()
+
+        if self.slice_selection is not None:
+            arr_df = arr_df.loc[self.slice_selection].copy()
+
         self.logger.info(f"{self.array_key}@{fs}, shape: {arr_df.shape}, [{arr_df.index[0], arr_df.index[-1]}]")
         assert arr_df.index.is_unique, f"NON UNIQUE TIME SERIES INDEX FOR KEY {self.array_key}"
 

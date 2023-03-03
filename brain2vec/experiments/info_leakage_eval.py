@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from typing import ClassVar, Union, Dict, Optional, Tuple
 from dataclasses import field
+from sklearn.metrics import confusion_matrix, classification_report
 from dataclasses import make_dataclass
 
 import attr
@@ -30,7 +31,7 @@ from dataclasses import dataclass
 import json
 from simple_parsing import subgroups
 #from ecog_speech import result_parsing
-from torchdata.datapipes import iter #import IterableWrapper, Mapper, Concater, Sampler
+from torchdata.datapipes import iter as td_iter #import IterableWrapper, Mapper, Concater, Sampler
 from torchdata.datapipes.map import SequenceWrapper, Concater
 from torch.utils.data import RandomSampler
 from torch.utils.data import default_collate
@@ -92,6 +93,8 @@ class SingleChannelAttacker(torch.nn.Module):
 
         if self.outputs == 1:
             self.classifier.append(torch.nn.Sigmoid())
+        else:
+            self.classifier.append(torch.nn.Softmax(dim=1))
 
     def forward(self, x):
         x_arr = x[self.pre_trained_model_output_key]
@@ -237,7 +240,10 @@ class DatasetWithModel:
 
         return split_0_dset_with_model, split_1_dset_with_model
 
-    def as_feature_extracting_datapipe(self, batch_size, device, multi_channel: bool = True):
+    def as_feature_extracting_datapipe(self, batch_size, device,
+                                       multi_channel: bool = True,
+                                       batches_per_epoch: Optional[int] = None,
+                                       one_hot_encode_target: bool = True):
         self.mc_member_model = self.mc_member_model.to(device)
         self.feature_model = self.member_model.to(device) if not multi_channel else self.mc_member_model.to(device)
 
@@ -252,7 +258,7 @@ class DatasetWithModel:
                             ).items()
                             }
 
-            model_out_dataset = model_out_dataset.map(run_mc_model).in_memory_cache()
+            model_out_dataset = model_out_dataset.map(run_mc_model)
         else:
             def run_sc_model(_d):
                 with torch.no_grad():
@@ -264,16 +270,41 @@ class DatasetWithModel:
                     ret_d['target_arr'] = _d['target_arr']
                     return ret_d
 
-            model_out_dataset = model_out_dataset.map(run_sc_model).in_memory_cache()
+            model_out_dataset = model_out_dataset.map(run_sc_model)
 
-        model_out_dataset.selected_columns = self.dataset.selected_columns
-        model_out_dataset.get_target_shape = self.dataset.get_target_shape
-        model_out_dataset.get_target_labels = self.dataset.get_target_labels
+        from torch.nn import functional as F
+        #num_classes = len(self.dataset.get_target_labels()[1])
+        def _one_hot_target(_d):
+            _d['target_arr'] = F.one_hot(_d['target_arr'], num_classes=2)#num_classes)
+            return _d
+
+        if batches_per_epoch is not None:
+            #model_out_dataset = BaseDataset.make_dataloader(model_out_dataset, 1,
+            #                            num_workers=0, batches_per_epoch=batches_per_epoch)
+            #model_out_dataset = SequenceWrapper(model_out_dataset)
+
+            model_out_dataset = td_iter.Sampler(model_out_dataset.to_iter_datapipe(),
+                                                sampler=torch.utils.data.RandomSampler,
+                                                sampler_kwargs=dict(num_samples=batches_per_epoch)
+                                                ).to_map_datapipe()
+            #model_out_dataset = torch.utils.data.RandomSampler(model_out_dataset, num_samples=batches_per_epoch)
+            #model_out_dataset = SequenceWrapper(model_out_dataset)
+
+        model_out_dataset = model_out_dataset.map(_one_hot_target).in_memory_cache()
+
+        model_out_dataset = self.patch_attributes(model_out_dataset)
+        #model_out_dataset.selected_columns = self.dataset.selected_columns
+        #model_out_dataset.get_target_shape = self.dataset.get_target_shape
+        #model_out_dataset.get_target_labels = self.dataset.get_target_labels
         return model_out_dataset
 
     def patch_attributes(self, obj):
+        def _get_target_shape(*args):
+            return 2
+
         obj.selected_columns = self.dataset.selected_columns
-        obj.get_target_shape = self.dataset.get_target_shape
+        #obj.get_target_shape = self.dataset.get_target_shape
+        obj.get_target_shape = _get_target_shape
         obj.get_target_labels = self.dataset.get_target_labels
         return obj
 
@@ -325,7 +356,11 @@ class DatasetWithModelBaseTask(bxp.TaskOptions):
         return pretrained_model, result_json
 
     def load_one_dataset_with_model(self, dset_w_model: DatasetWithModel, sensor_columns='valid'):
+        if isinstance(self.dataset.pipeline_params, str):
+            self.dataset.pipeline_params = eval(self.dataset.pipeline_params)
+
         base_kws = dict(pre_processing_pipeline=self.dataset.pre_processing_pipeline,
+                        pipeline_params=self.dataset.pipeline_params,
                         data_subset=self.dataset.data_subset,
                         label_reindex_col=self.dataset.label_reindex_col,
                         extra_output_keys=self.dataset.extra_output_keys.split(',')
@@ -361,7 +396,8 @@ class OneModelMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
     dataset_with_model_d: dict = field(default=None, init=False)
 
     def make_criteria_and_target_key(self):
-        criterion = torch.nn.BCELoss()
+        #criterion = torch.nn.BCELoss()
+        criterion = torch.nn.CrossEntropyLoss(weight=torch.Tensor([[1., 3.]]))
         target_key = 'target_arr'
         return criterion, target_key
 
@@ -444,13 +480,15 @@ class OneModelMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
 
         train_datapipe = train_dataset_with_model.as_feature_extracting_datapipe(
             self.dataset.batch_size,
-            self.device, '2d' in self.method)
+            batches_per_epoch=self.dataset.batches_per_epoch,
+            device=self.device, multi_channel='2d' in self.method)
         train_datapipe = train_dataset_with_model.patch_attributes(train_datapipe)
 
 
         cv_datapipe = cv_dataset_with_model.as_feature_extracting_datapipe(
             self.dataset.batch_size_eval if self.dataset.batch_size_eval is not None else self.dataset.batch_size,
-            self.device, '2d' in self.method)
+            batches_per_epoch=self.dataset.batches_per_epoch,
+            device=self.device, multi_channel='2d' in self.method)
         cv_datapipe = cv_dataset_with_model.patch_attributes(cv_datapipe)
 
         # ---
@@ -465,10 +503,10 @@ class OneModelMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
 
         test_datapipe = test_dataset_with_model.as_feature_extracting_datapipe(
             self.dataset.batch_size_eval if self.dataset.batch_size_eval is not None else self.dataset.batch_size,
-            self.device, '2d' in self.method)
+            batches_per_epoch=self.dataset.batches_per_epoch,
+            device=self.device, multi_channel='2d' in self.method)
         test_datapipe = test_dataset_with_model.patch_attributes(test_datapipe)
         # --- End Test data pipe setup ---
-
 
         self.dataset_with_model_d = dict(train=train_dataset_with_model,
                                          cv=cv_dataset_with_model,
@@ -484,10 +522,18 @@ class OneModelMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
 @dataclass
 class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
     task_name: str = "membership_inference_classification_fine_tuning"
-    pretrained_shadow_model_result_input_0: bxp.ResultInputOptions = None
-    pretrained_shadow_model_result_input_1: bxp.ResultInputOptions = None
-    pretrained_target_model_result_input: bxp.ResultInputOptions = None
+    pretrained_shadow_model_result_input_0: Optional[bxp.ResultInputOptions] = None
+    pretrained_shadow_model_result_input_1: Optional[bxp.ResultInputOptions] = None
+    pretrained_shadow_model_result_input_2: Optional[bxp.ResultInputOptions] = None
+    pretrained_shadow_model_result_input_3: Optional[bxp.ResultInputOptions] = None
+    pretrained_shadow_model_result_input_4: Optional[bxp.ResultInputOptions] = None
+    pretrained_shadow_model_result_input_5: Optional[bxp.ResultInputOptions] = None
 
+    pretrained_target_model_result_input_0: Optional[bxp.ResultInputOptions] = None
+    pretrained_target_model_result_input_1: Optional[bxp.ResultInputOptions] = None
+    pretrained_target_model_result_input_2: Optional[bxp.ResultInputOptions] = None
+
+    pretrained_result_dir: Optional[str] = None
     dataset: datasets.DatasetOptions = HarvardSentencesDatasetOptions(train_sets='AUTO-PRETRAINING',
                                                                       flatten_sensors_to_samples=False,
                                                                       label_reindex_col='patient',
@@ -501,11 +547,93 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
     dataset_with_model_d: dict = field(default=None, init=False)
 
     def make_criteria_and_target_key(self):
-        criterion = torch.nn.BCELoss()
+        #criterion = torch.nn.BCELoss()
+        #weight = torch.Tensor([1., 3.]).to(self.device)
+        #criterion = torch.nn.CrossEntropyLoss(weight=weight)
+        criterion = torch.nn.CrossEntropyLoss()#weight=weight)
         target_key = 'target_arr'
         return criterion, target_key
 
     def load_models(self):
+        if self.dataset.test_sets is not None:
+            self.infer_models_from_test_sets()
+        else:
+            self.load_models_selected_in_options()
+
+    def infer_models_from_test_sets(self):
+        assert self.dataset.test_sets is not None
+        assert self.pretrained_result_dir is not None
+        assert os.path.isdir(self.pretrained_result_dir)
+
+        pretrained_model_dir = os.path.join(self.pretrained_result_dir, 'models')
+
+        from brain2vec.experiments import load_results_to_frame, load_model_from_results
+
+        model_glob_p = os.path.join(self.pretrained_result_dir, '*.json')
+        results_df = load_results_to_frame(model_glob_p)
+
+        opt_df_map = {opt_col: results_df[opt_col].apply(pd.Series) for opt_col in
+                      results_df.filter(like='_options').columns}
+
+        options_df = opt_df_map['model_options'].copy()
+        for opt_name, _df in opt_df_map.items():
+            keep_cols = list(set(_df.columns.tolist()) - set(options_df.columns.tolist()))
+            options_df = options_df.join(_df[keep_cols].copy())
+
+        opt_cols = options_df.drop(['model_name', 'save_model_path'], axis=1).columns.tolist()
+
+        result_options_df = results_df.join(options_df[opt_cols])
+        result_options_df.datetime.min(), result_options_df.datetime.max()
+
+        assert result_options_df.train_sets.is_unique
+        assert result_options_df.dataset_name.nunique() == 1
+
+        dataset_name = result_options_df.dataset_name.unique()[0]
+        assert dataset_name == self.dataset.dataset_name
+        all_pretrain_str_set = result_options_df.train_sets.pipe(set)
+
+        dataset_cls = BaseDataset.get_dataset_by_name(dataset_name)
+        unique_test_tuples_l = dataset_cls.make_tuples_from_sets_str(self.dataset.test_sets)
+
+        train_set_tuples_s = result_options_df.train_sets.map(dataset_cls.make_tuples_from_sets_str)
+
+        assert train_set_tuples_s.apply(len).nunique() == 1
+
+        model_n_train_sets = len(train_set_tuples_s.iloc[0])
+        unique_train_tuples_l = set(train_set_tuples_s.sum())
+
+        shadow_model_tuples = set(unique_train_tuples_l) - set(unique_test_tuples_l)
+
+        target_models_m = train_set_tuples_s.apply(lambda l: all(_l in unique_test_tuples_l for _l in l))
+        target_model_result_files = result_options_df[target_models_m].name.values
+
+        shadow_models_m = train_set_tuples_s.apply(lambda l: all(_l in shadow_model_tuples for _l in l))
+        shadow_model_result_files = result_options_df[shadow_models_m].name.values
+
+        self.shadow_model_results_map = dict()
+        self.shadow_model_map = dict()
+        self.target_model_map = dict()
+        self.target_model_results_map = dict()
+
+        for sm_id, sm_file in enumerate(shadow_model_result_files):
+            result_file_p = os.path.join(self.pretrained_result_dir, sm_file)
+            self.logger.info('--------------------')
+            self.logger.info(f"Shadow model {sm_id}: " + str(result_file_p))
+
+            self.shadow_model_map[sm_id], self.shadow_model_results_map[sm_id] = self.load_pretrained_model_results(
+                result_file_p, pretrained_model_dir, device=self.device
+            )
+
+        for tgt_id, tgt_file in enumerate(target_model_result_files):
+            result_file_p = os.path.join(self.pretrained_result_dir, tgt_file)
+            self.logger.info('--------------------')
+            self.logger.info(f"Target model {tgt_id}: " + str(result_file_p))
+
+            self.target_model_map[tgt_id], self.target_model_results_map[tgt_id] = self.load_pretrained_model_results(
+                result_file_p, pretrained_model_dir, device=self.device
+            )
+
+    def load_models_selected_in_options(self):
         # Load a "shadow" model (M_s) that was pretrained on 2 patients (M_s0, M_s1)
         # Load a "target" model (M_t) that was pretrained on 2 patients (M_t0, M_t1)
         #  |-> This leaves 3 patients unseen (u0, u1, u2)
@@ -515,33 +643,40 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
         #  |-> The imbalance, while not great, at least simulates real-world scenario well
         self.shadow_model_results_map = dict()
         self.shadow_model_map = dict()
+        self.target_model_map = dict()
+        self.target_model_results_map = dict()
 
         # ---
         # Load models
-        self.logger.info('--------------------')
-        self.logger.info("Shadow model 0: " + str(self.pretrained_shadow_model_result_input_0))
-        self.shadow_model_map[0], self.shadow_model_results_map[0] = self.load_pretrained_model_results(
-            self.pretrained_shadow_model_result_input_0.result_file,
-            self.pretrained_shadow_model_result_input_0.model_base_path,
-            device=self.device
-        )
+        shadow_model_inputs = [self.pretrained_shadow_model_result_input_0, self.pretrained_shadow_model_result_input_1,
+                               self.pretrained_shadow_model_result_input_2, self.pretrained_shadow_model_result_input_3,
+                               self.pretrained_shadow_model_result_input_4, self.pretrained_shadow_model_result_input_5]
 
-        self.logger.info('--------------------')
-        self.logger.info("Shadow model 1: " + str(self.pretrained_shadow_model_result_input_1))
-        self.shadow_model_map[1], self.shadow_model_results_map[1] = self.load_pretrained_model_results(
-                self.pretrained_shadow_model_result_input_1.result_file,
-                self.pretrained_shadow_model_result_input_1.model_base_path,
-                device=self.device
+        for sm_id, sm_input in enumerate(shadow_model_inputs):
+            if sm_input is None:
+                self.logger.info(f"Shadow model {sm_id} not provided - skipping")
+                continue
+
+            self.logger.info('--------------------')
+            self.logger.info(f"Shadow model {sm_id}: " + str(sm_input))
+
+            self.shadow_model_map[sm_id], self.shadow_model_results_map[sm_id] = self.load_pretrained_model_results(
+                sm_input.result_file, sm_input.model_base_path, device=self.device
             )
 
-        self.logger.info('--------------------')
-        self.logger.info("Target model: " + str(self.pretrained_target_model_result_input))
-        self.target_model, self.target_model_results = self.load_pretrained_model_results(
-            self.pretrained_target_model_result_input.result_file,
-            self.pretrained_target_model_result_input.model_base_path,
-            device=self.device
-        )
-        assert len(self.shadow_model_results_map) == 2
+        target_model_inputs = [self.pretrained_target_model_result_input_0, self.pretrained_target_model_result_input_1,
+                               self.pretrained_target_model_result_input_2]
+        for tgt_id, tgt_input in enumerate(target_model_inputs):
+            if tgt_input is None:
+                self.logger.info(f"Target model {tgt_id} not provided - skipping")
+                continue
+
+            self.logger.info('--------------------')
+            self.logger.info(f"Shadow model {tgt_id}: " + str(tgt_input))
+
+            self.target_model_map[tgt_id], self.target_model_results_map[tgt_id] = self.load_pretrained_model_results(
+                tgt_input.result_file, tgt_input.model_base_path, device=self.device
+            )
 
     def get_member_model_output_shape(self) -> Tuple:
         member_model = self.shadow_model_map[0]
@@ -556,91 +691,100 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
 
         sm_pretrain_sets_d = {k: self.load_and_check_pretrain_opts(res, self.dataset.dataset_name, dataset_cls)
                               for k, res in self.shadow_model_results_map.items()}
+        target_pretrain_sets_d = {k: self.load_and_check_pretrain_opts(res, self.dataset.dataset_name, dataset_cls)
+                              for k, res in self.target_model_results_map.items()}
+
+        unique_shadow_sets = list(set(sum(sm_pretrain_sets_d.values(), list())))
 
         # -------------
         # Setup training data pipe for attacker
         shadow_training_sets_with_model: Dict[int, DatasetWithModel] = dict()
 
+        cv_shadow_models = np.random.choice(list(self.shadow_model_map.keys()), size=2)
         for ii, (sm_k, sm_pretrained_model) in enumerate(self.shadow_model_map.items()):
-            # sm_k and ii should be the same
-            shadow_training_sets_with_model[ii] = DatasetWithModel(
-                # Take the first pretrain set from each pretrained model
-                p_tuples=[pretrain_tuples[ii] for _sm_k, pretrain_tuples in sm_pretrain_sets_d.items()],
+            if sm_k in cv_shadow_models:
+                continue
+
+            shadow_training_sets_with_model[sm_k] = DatasetWithModel(
+                p_tuples=unique_shadow_sets,
                 # Pretraining participants from this model are the positive class (member)
-                reindex_map={pretrain_tuples[ii][1]: 1 if sm_k == _sm_k else 0
-                             for _sm_k, pretrain_tuples in sm_pretrain_sets_d.items()},
+                reindex_map={s[1]: 1 if s in sm_pretrain_sets_d[sm_k] else 0 for s in unique_shadow_sets},
                 dataset_cls=dataset_cls,
                 member_model=sm_pretrained_model
             )
-        assert len(shadow_training_sets_with_model) == 2
-        shadow_training_sets_with_model[0] = self.load_one_dataset_with_model(shadow_training_sets_with_model[0],
+
+        first_sm = next(iter(shadow_training_sets_with_model.values()))
+        shadow_training_sets_with_model[0] = self.load_one_dataset_with_model(first_sm,
                                                                               sensor_columns=kws.get('sensor_columns',
                                                                                                      'valid'))
+        selected_columns = first_sm.dataset.selected_columns
+        for k, st_with_model in shadow_training_sets_with_model.items():
+            if k == 0:
+                continue
+            self.load_one_dataset_with_model(shadow_training_sets_with_model[k], sensor_columns=selected_columns)
 
-        selected_columns = shadow_training_sets_with_model[0].dataset.selected_columns
-        shadow_training_sets_with_model[1] = self.load_one_dataset_with_model(shadow_training_sets_with_model[1],
-                                                                              sensor_columns=selected_columns)
+        train_pipes = [s.as_feature_extracting_datapipe(
+            self.dataset.batch_size, batches_per_epoch=self.dataset.batches_per_epoch,
+            device=self.device, multi_channel='2d' in self.method)
 
-        train_pipes = [s.as_feature_extracting_datapipe(self.dataset.batch_size, self.device, '2d' in self.method)
                        for k, s in shadow_training_sets_with_model.items()]
 
         training_datapipe = Concater(*train_pipes).shuffle()
-        training_datapipe = shadow_training_sets_with_model[0].patch_attributes(training_datapipe)
+        training_datapipe = next(iter(shadow_training_sets_with_model.values())).patch_attributes(training_datapipe)
         # --- End Training data pipe setup ---
 
         # -------------
         # -- Setup CV
+        #cv_pair_ix = 1
         shadow_cv_sets_with_model: Dict[int, DatasetWithModel] = dict()
         for ii, (sm_k, sm_pretrained_model) in enumerate(reversed(self.shadow_model_map.items())):
+            if sm_k not in cv_shadow_models:
+                continue
             # sm_k and ii should be the same
-            shadow_cv_sets_with_model[ii] = DatasetWithModel(
+            shadow_cv_sets_with_model[sm_k] = DatasetWithModel(
                 # Take the first pretrain set from each pretrained model
-                p_tuples=[pretrain_tuples[ii] for _sm_k, pretrain_tuples in sm_pretrain_sets_d.items()],
+                p_tuples=unique_shadow_sets,
                 # Pretraining participants from this model are the positive class (member)
-                reindex_map={pretrain_tuples[ii][1]: 1 if sm_k == _sm_k else 0
-                             for _sm_k, pretrain_tuples in sm_pretrain_sets_d.items()},
+                reindex_map={s[1]: 1 if s in sm_pretrain_sets_d[sm_k] else 0 for s in unique_shadow_sets},
                 dataset_cls=dataset_cls,
                 member_model=sm_pretrained_model
             )
-        assert len(shadow_cv_sets_with_model) == 2
-        shadow_cv_sets_with_model[0] = self.load_one_dataset_with_model(shadow_cv_sets_with_model[0], selected_columns)
-        shadow_cv_sets_with_model[1] = self.load_one_dataset_with_model(shadow_cv_sets_with_model[1], selected_columns)
+        shadow_cv_sets_with_model = {k: self.load_one_dataset_with_model(st_with_model, selected_columns)
+                                     for k, st_with_model in shadow_cv_sets_with_model.items()}
 
-        cv_datapipe = Concater(*[s.as_feature_extracting_datapipe(self.dataset.batch_size, self.device,
-                                                                  '2d' in self.method)
+        cv_datapipe = Concater(*[s.as_feature_extracting_datapipe(
+            self.dataset.batch_size, batches_per_epoch=self.dataset.batches_per_epoch,
+            device=self.device, multi_channel='2d' in self.method)
                                  for k, s in shadow_cv_sets_with_model.items()]).shuffle()
-        cv_datapipe = shadow_cv_sets_with_model[0].patch_attributes(cv_datapipe)
+        cv_datapipe = next(iter(shadow_cv_sets_with_model.values())).patch_attributes(cv_datapipe)
         # --- End CV data pipe setup ---
 
         # -------------
         # -- Set up target as the test set
-        target_pretrain_sets = self.load_and_check_pretrain_opts(self.target_model_results, self.dataset.dataset_name,
-                                                                 dataset_cls)
-        # Sets used by either shadow models or target model
-        used_sets = target_pretrain_sets + list(sum(sm_pretrain_sets_d.values(), list()))
-        # Sets that were not used in any of the pretrained models, shadow or target
-        unused_sets = [s for s in all_sets if s not in used_sets]
-        # Test's positive are from the last models pretrain sets
-        test_reindex_map = {pt[1]: 1 for pt in target_pretrain_sets}
-        # Test's negative are from the remaining patient
-        test_reindex_map.update({pt[1]: 0 for pt in unused_sets})
+        unique_target_sets: List[Tuple] = list(set(sum(target_pretrain_sets_d.values(), list())))
+        # Sets used by either shadow models or target modelt
+        test_sets_with_model: Dict[int, DatasetWithModel] = dict()
+        for ii, (t_k, t_pretrained_model) in enumerate(self.target_model_map.items()):
+            target_pretrain_sets = target_pretrain_sets_d[t_k]
+            test_sets_with_model[t_k] = DatasetWithModel(
+                p_tuples=unique_target_sets,
+                reindex_map={s[1]: 1 if s in target_pretrain_sets else 0 for s in unique_target_sets},
+                dataset_cls=dataset_cls,
+                member_model=t_pretrained_model
+            )
 
-        shadow_test_set_with_model = DatasetWithModel(
-            p_tuples=target_pretrain_sets + unused_sets,
-            reindex_map=test_reindex_map,
-            dataset_cls=dataset_cls,
-            member_model=self.target_model
-        )
-        shadow_test_set_with_model = self.load_one_dataset_with_model(shadow_test_set_with_model, selected_columns)
-        test_datapipe = shadow_test_set_with_model.as_feature_extracting_datapipe(
-            self.dataset.batch_size_eval if self.dataset.batch_size_eval is not None else self.dataset.batch_size,
-            self.device, '2d' in self.method)
-        test_datapipe = shadow_test_set_with_model.patch_attributes(test_datapipe)
+            test_sets_with_model[t_k] = self.load_one_dataset_with_model(test_sets_with_model[t_k], selected_columns)
+
+        test_datapipe = Concater(*[s.as_feature_extracting_datapipe(
+                self.dataset.batch_size_eval, batches_per_epoch=self.dataset.batches_per_eval_epoch,
+                device=self.device, multi_channel='2d' in self.method)
+                                 for k, s in test_sets_with_model.items()]).shuffle()
+        test_datapipe = test_sets_with_model[0].patch_attributes(test_datapipe)
         # --- End Test data pipe setup ---
 
         self.dataset_with_model_d = dict(train=shadow_training_sets_with_model,
                                          cv=shadow_cv_sets_with_model,
-                                         test=shadow_test_set_with_model)
+                                         test=test_sets_with_model)
         ret_datapipe_d = dict(train=training_datapipe, cv=cv_datapipe, test=test_datapipe)
 
         return dict(ret_datapipe_d), dict(ret_datapipe_d), dict(ret_datapipe_d)
@@ -678,8 +822,6 @@ class InfoLeakageExperiment(bxp.Experiment):
         if getattr(self, 'initialized', False):
             return self
 
-        #self.load_models()
-
         # --
         # Load Datasets
         self.dataset_map, self.dl_map, self.eval_dl_map = self.task.make_dataset_and_loaders(
@@ -698,7 +840,7 @@ class InfoLeakageExperiment(bxp.Experiment):
         else:
             attack_arr_shape =T * C
             self.model_kws = dict(
-                input_size=attack_arr_shape, outputs=1,
+                input_size=attack_arr_shape, outputs=2,
                 linear_hidden_n=self.attacker_model.linear_hidden_n,
                 n_layers=self.attacker_model.n_layers,
                 dropout_rate=self.attacker_model.dropout,
@@ -736,39 +878,65 @@ class InfoLeakageExperiment(bxp.Experiment):
 
     def eval(self):
         outputs_map = self.trainer.generate_outputs(**self.eval_dl_map)
-        class_val_to_label_d, class_labels = self.dataset_map['train'].get_target_labels()
-        from sklearn.metrics import confusion_matrix
+
+        # TODO: This will not work for other tasks
+        #class_val_to_label_d, class_labels = self.dataset_map['train'].get_target_labels()
+        class_val_to_label_d = {0: 'nonmember', 1: 'member'}
+        class_labels = list(class_val_to_label_d.values())
+
         output_cm_map = dict()
+        output_clf_report_map = dict()
+        output_performance_map = dict()
         for part_name, out_d in outputs_map.items():
+            logger.info(("-" * 20) + part_name + ("-" * 20))
             preds_arr: np.ndarray = out_d['preds'].squeeze()
-            if preds_arr.ndim == 1:
-                n_preds = 1 - preds_arr
-                preds_arr = np.concatenate([n_preds.reshape(-1, 1), preds_arr.reshape(-1, 1)], axis=1)
+            #print(np.unique(preds_arr))
+            #if preds_arr.ndim == 1:
+            #    n_preds = 1 - preds_arr
+            #    preds_arr = np.concatenate([n_preds.reshape(-1, 1), preds_arr.reshape(-1, 1)], axis=1)
             preds_df = pd.DataFrame(preds_arr, columns=class_labels)
-            y_s = pd.Series(out_d['actuals'].reshape(-1), index=preds_df.index, name='actuals')
-            y_label_s = y_s.map(class_val_to_label_d)
-            cm = confusion_matrix(y_label_s, preds_df.idxmax(1), labels=preds_df.columns.tolist())
-            output_cm_map[part_name] = pd.DataFrame(cm, columns=preds_df.columns, index=preds_df.columns).to_json()
-
-        performance_map = dict()
-        clf_str_map = None
-        if self.task.dataset.dataset_name == 'hvs':
-            target_shape = self.dataset_map['train'].get_target_shape()
-
-            kws = dict(threshold=(0.5 if target_shape == 1 else None))
-            clf_str_map = utils.make_classification_reports(outputs_map, **kws)
-            if target_shape == 1:
-                performance_map = {part_name: utils.performance(outputs_d['actuals'],
-                                                                outputs_d['preds'] > 0.5)
-                                   for part_name, outputs_d in outputs_map.items()}
+            logger.debug("Parsing actuals")
+            if out_d['actuals'].squeeze().ndim == 2:
+                y_arr = out_d['actuals'].squeeze().argmax(-1).reshape(-1)
             else:
-                performance_map = {part_name: utils.multiclass_performance(outputs_d['actuals'],
-                                                                           outputs_d['preds'].argmax(1))
-                                   for part_name, outputs_d in outputs_map.items()}
-            print(performance_map)
+                y_arr = out_d['actuals'].reshape(-1)
+            logger.debug("Storing into series")
+            y_s = pd.Series(y_arr, index=preds_df.index, name='actuals')
+            #print(y_s)
+            y_label_s = y_s.map(class_val_to_label_d)
+            logger.debug("Calculating confusion matric")
+            cm = confusion_matrix(y_label_s, preds_df.idxmax(1), labels=preds_df.columns.tolist())
+            #cm = confusion_matrix(y_label_s, preds_df.values.argmax(1))#, labels=preds_df.columns.tolist())
+            output_cm_map[part_name] = pd.DataFrame(cm, columns=preds_df.columns, index=preds_df.columns).to_json()
+            logger.debug("Calculating classification report")
+            output_clf_report_map[part_name] = classification_report(y_label_s, preds_df.idxmax(axis=1))
+            print(output_clf_report_map[part_name])
+
+            output_performance_map[part_name] = utils.multiclass_performance(y_label_s, preds_df.idxmax(axis=1))
+        logger.info(output_performance_map)
+
+        #performance_map = dict()
+        #clf_str_map = None
+        #if self.task.dataset.dataset_name == 'hvs':
+        #    target_shape = self.dataset_map['train'].get_target_shape()
+        #    print("Target shape in eval: " + str(target_shape))
+
+        #    kws = dict(threshold=(0.5 if target_shape == 1 else None))
+        #    clf_str_map = utils.make_classification_reports(outputs_map, **kws)
+        #    if target_shape == 1:
+        #        performance_map = {part_name: utils.performance(outputs_d['actuals'],
+        #                                                        outputs_d['preds'] > 0.5)
+        #                           for part_name, outputs_d in outputs_map.items()}
+        #    else:
+        #        performance_map = {part_name: utils.multiclass_performance(outputs_d['actuals'],
+        #                                                                   outputs_d['preds'].values.idxmax(axis=1))
+        #                                                                   #outputs_d['preds'].argmax(1))
+        #                           for part_name, outputs_d in outputs_map.items()}
+        #    print(performance_map)
 
         self.outputs_map, self.output_cm_map, self.performance_map, self.clf_str_map = [outputs_map, output_cm_map,
-                                                                                        performance_map, clf_str_map]
+                                                                                        output_performance_map,
+                                                                                        output_clf_report_map]
 
     def run(self):
         self.initialize()
@@ -814,14 +982,12 @@ class InfoLeakageExperiment(bxp.Experiment):
         return self.trainer, self.performance_map
 
 
-
 @attr.s
 class ShadowClassifierTrainer(bmp.Trainer):
     input_key = attr.ib('signal_arr')
     squeeze_target = attr.ib(False)
 
     squeeze_first = True
-
 
     def loss(self, model_output_d, input_d, as_tensor=True):
         target = (input_d[self.target_key].squeeze() if self.squeeze_target
@@ -831,8 +997,9 @@ class ShadowClassifierTrainer(bmp.Trainer):
 
         model_output_d = model_output_d.reshape(*target.shape)
 
-        crit_loss = self.criterion(model_output_d.float() if isinstance(self.criterion, torch.nn.BCEWithLogitsLoss) else model_output_d,
-                                   target)
+        crit_loss = self.criterion(model_output_d.float()
+                                   if isinstance(self.criterion, torch.nn.BCEWithLogitsLoss) else model_output_d,
+                                   target.float())
         return crit_loss
 
     def _eval(self, epoch_i, dataloader, model_key='model'):
@@ -942,7 +1109,6 @@ class ShadowClassifierTrainer(bmp.Trainer):
                       )#dict(**score_d, **loss_d)
 
         return eval_d
-
 
 
 if __name__ == """__main__""":

@@ -89,11 +89,6 @@ class HarvardSentences(BaseASPEN):
 
         ]
 
-        #parse_stim_steps = [
-        #    # Produces imagine_start/stop_t and mouth_start/stop_t
-        #    ('stim_from_start_stop', pipeline.SentenceAndWordStimFromRegionStartStopTimes()),
-        #]
-
         audio_gate_steps = [
             ('Threshold', ps.PowerThreshold(speaking_window_samples=48000 // 16,
                                                   silence_window_samples=int(48000 * 1.5),

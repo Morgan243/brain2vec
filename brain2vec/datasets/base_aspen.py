@@ -72,6 +72,7 @@ class BaseASPEN(BaseDataset):
     # power_threshold = attr.ib(0.007)
     # power_q = attr.ib(0.70)
     pre_processing_pipeline = attr.ib(None)
+    pipeline_params: Optional[dict] = attr.ib(None)
     # If using one source of data, with different `selected_word_indices`, then
     # passing the first NWW dataset to all subsequent ones built on the same source data
     # can save on memory and reading+parsing time
@@ -118,7 +119,13 @@ class BaseASPEN(BaseDataset):
         # If the pipeline function is an sklearn pipeline, then use its transform() method
         if isinstance(self.pipeline_f, Pipeline):
             self.pipeline_obj = self.pipeline_f
+            if self.pipeline_params is not None:
+                self.pipeline_obj.set_params(**self.pipeline_params)
+
             self.pipeline_f = self.pipeline_obj.transform
+        elif self.pipeline_params is not None:
+            logger.warning(f"Pipeline params were provided, but have a pipeline that is not... an SkLearn Pipeline!")
+            logger.warning("So pipeline params are unused!")
 
         # If no data sharing, then load and parse data from scratch
         if self.data_from is None:
@@ -237,6 +244,8 @@ class BaseASPEN(BaseDataset):
                 if 'word_start_stop_times' in self.data_maps[l_p_s_t]:
                     self.logger.info(f"word_start_stop_times found - aligning all index start times to a sentence code")
                     wsst_df = self.data_maps[l_p_s_t]['word_start_stop_times']
+                    assert p_ix_df.start_t.is_unique, f"p_ix_df.start_t is not unique: {p_ix_df.start_t.value_counts()}"
+                    assert wsst_df.index.is_unique, f"wsst_df.index is not unique: {wsst_df.index.value_counts()}"
                     nearest_ixes = wsst_df.index.get_indexer(p_ix_df.start_t, method='nearest')
                     p_ix_df['sent_code'] = wsst_df.iloc[nearest_ixes].stim_sentcode.values
 
@@ -692,16 +701,6 @@ class BaseASPEN(BaseDataset):
         kws = {target_key: torch.LongTensor([label])}
         if target_transform is not None:
             kws[target_key] = target_transform(kws[target_key])
-        return kws
-
-    @staticmethod
-    def get_targets_old(data_map, ix, label, target_transform=None):
-        label = label[0]
-
-        kws = dict(text='<silence>' if label <= 0 else '<speech>',
-                   text_arr=torch.Tensor([0] if label <= 0 else [1]))
-        if target_transform is not None:
-            kws['text_arr'] = target_transform(kws['text_arr'])
         return kws
 
     def sample_plot(self, i, band=None,

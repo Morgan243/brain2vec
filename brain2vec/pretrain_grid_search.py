@@ -13,12 +13,15 @@ from mmz.experiments import ResultOptions
 from time import sleep
 import os
 from copy import deepcopy
+from pathlib import Path
 
 
 logger = get_logger(__name__)
 
 RESULT_PATH = os.environ.get('RESULT_PATH')
 MODEL_PATH = os.path.join(RESULT_PATH, 'models')
+Path(RESULT_PATH).mkdir(parents=True, exist_ok=True)
+Path(MODEL_PATH).mkdir(parents=True, exist_ok=True)
 
 
 @dataclass
@@ -30,21 +33,38 @@ class PretrainGridSearch(JsonSerializable):
                                                  batch_size_eval=4096,
                                                  n_dl_workers=0,
                                                  n_dl_eval_workers=0),
-        task=SemisupervisedCodebookTaskOptions(lr_adjust_patience=3, early_stopping_patience=None, n_epochs=20))
+        task=SemisupervisedCodebookTaskOptions(lr_adjust_patience=5, early_stopping_patience=None, n_epochs=20))
+
+    n_splits: int = 1
+    this_split: int = 0
 
     def run(self):
         pos_opts = [
-            dict(positional_encoding_method='combined', ras_pos_encoding=True),
-            #dict(positional_encoding_method='ras_only', ras_pos_encoding=True),
-            dict(positional_encoding_method='relative', ras_pos_encoding=False),
+            # This config is not valid - temporal aspect combined into the ras encoding
+            #dict(positional_encoding_method='combined', temporal_pos_encoding=True, ras_pos_encoding=True),
+            # --
+
+            dict(positional_encoding_method='combined', #temporal_pos_encoding=False,
+                 ras_pos_encoding=True),
+            #dict(positional_encoding_method='independent', temporal_pos_encoding=True, ras_pos_encoding=True),
+            #dict(positional_encoding_method='independent', temporal_pos_encoding=False, ras_pos_encoding=True),
+
+            #dict(positional_encoding_method='independent', temporal_pos_encoding=False, ras_pos_encoding=False),
+            #dict(positional_encoding_method='independent', temporal_pos_encoding=False, ras_pos_encoding=True),
         ]
         kws_l = [dict(n_encoder_layers=n_enc_layers, **pos_opts_kws)
                  for pos_opts_kws in pos_opts
                     #for n_enc_layers in [1, 3, 6, 9, 12]
-                    for n_enc_layers in [1, 3, 6]
+                    #for n_enc_layers in [1, 3, 6]
+                    #for n_enc_layers in [3, 6, 9, 12]
+                 for n_enc_layers in [5, 6, 7, 8, 9]
                  ]
-        print(f"Preparing to run {len(kws_l)} experiments")
-        for i, kws in enumerate(kws_l):
+
+        kws_splits = np.array_split(kws_l, self.n_splits)
+        kws_to_run = kws_splits[self.this_split]
+
+        print(f"Preparing to run {len(kws_to_run)} experiments")
+        for i, kws in enumerate(kws_to_run):
             print(f"-->>> RUNNING:\n{kws}")
             exper = deepcopy(self.experiment)
             exper.model = Brain2VecOptions(**kws)

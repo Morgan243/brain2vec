@@ -3,7 +3,7 @@ from torch.utils import data as tdata
 from dataclasses import dataclass, field
 from simple_parsing.helpers import JsonSerializable
 
-from typing import List, Optional, Type, ClassVar, Dict
+from typing import List, Optional, Type, ClassVar, Dict, Union
 
 from mmz import utils
 
@@ -179,6 +179,8 @@ class DatasetOptions(JsonSerializable):
     batches_per_eval_epoch: Optional[int] = None
 
     pre_processing_pipeline: str = 'default'
+    #pipeline_params: Optional[Union[str, Dict]] = None
+    pipeline_params: Optional[str] = None
 
     train_sets: str = None
     cv_sets: Optional[str] = None
@@ -281,8 +283,12 @@ class DatasetOptions(JsonSerializable):
         logger.info("CV tuples: " + str(cv_p_tuples))
         logger.info("Test tuples: " + str(test_p_tuples))
 
+        if isinstance(self.pipeline_params, str):
+            self.pipeline_params = eval(self.pipeline_params)
+
         base_kws = dict(pre_processing_pipeline=self.pre_processing_pipeline if pre_processing_pipeline is None
                                                 else pre_processing_pipeline,
+                        pipeline_params=self.pipeline_params,
                         data_subset=self.data_subset,
                         label_reindex_col=self.label_reindex_col,
                         extra_output_keys=self.extra_output_keys.split(',') if self.extra_output_keys is not None
