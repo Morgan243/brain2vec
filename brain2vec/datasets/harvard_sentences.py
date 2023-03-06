@@ -194,8 +194,8 @@ class HarvardSentences(BaseASPEN):
         select_words = ps.SelectWordsFromStartStopTimes()
         p_map = {
             'random_sample': Pipeline(parse_arr_steps + parse_input_steps
-            + [('rnd_stim', ps.RandomStim(10_000)),
-               ('rnd_indices', ps.WindowSampleIndicesFromIndex(stim_key='random_stim'))]
+                                      + [('rnd_stim', ps.RandomStim(10_000)),
+                                         ('rnd_indices', ps.WindowSampleIndicesFromIndex(stim_key='random_stim'))]
                                       + [('output', 'passthrough')]),
 
             'random_sample_pinknoise': Pipeline(parse_arr_steps + parse_input_steps +

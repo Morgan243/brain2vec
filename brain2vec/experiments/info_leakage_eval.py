@@ -379,11 +379,26 @@ class DatasetWithModelBaseTask(bxp.TaskOptions):
 
 @with_logger
 @dataclass
+class ReidentificationTask(bxp.TaskOptions):
+    """
+    (1) take as input a pretrained model path - train_sets?
+    """
+    task_name: str = "reidentification_classification_fine_tuning"
+    dataset: HarvardSentencesDatasetOptions = HarvardSentencesDatasetOptions(train_sets='AUTO-PRETRAINING',
+                                                                             flatten_sensors_to_samples=True,
+                                                                             label_reindex_col='patient',
+                                                                             split_cv_from_test=False,
+                                                                             pre_processing_pipeline='random_sample')
+    pretrained_model: bxp.ResultInputOptions = None
+
+
+@with_logger
+@dataclass
 class OneModelMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
     task_name: str = "membership_inference_classification_fine_tuning"
 
     pretrained_target_model_result_input: bxp.ResultInputOptions = None
-    dataset: datasets.DatasetOptions = HarvardSentencesDatasetOptions(train_sets='AUTO-PRETRAINING',
+    dataset: HarvardSentencesDatasetOptions = HarvardSentencesDatasetOptions(train_sets='AUTO-PRETRAINING',
                                                                       flatten_sensors_to_samples=False,
                                                                       label_reindex_col='patient',
                                                                       split_cv_from_test=False,
@@ -471,11 +486,10 @@ class OneModelMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
         )
         train_dataset_with_model = self.load_one_dataset_with_model(train_dataset_with_model,
                                                                     sensor_columns=sensor_columns)
-        seleceted_sensor_columns = train_dataset_with_model.dataset.selected_columns
+        selected_sensor_columns = train_dataset_with_model.dataset.selected_columns
 
         train_dataset_with_model, cv_dataset_with_model = train_dataset_with_model.split_on_key_level(
             keys=('patient', 'sent_code'),
-            #stratify='label',
             test_size=0.25)
 
         train_datapipe = train_dataset_with_model.as_feature_extracting_datapipe(
@@ -483,7 +497,6 @@ class OneModelMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
             batches_per_epoch=self.dataset.batches_per_epoch,
             device=self.device, multi_channel='2d' in self.method)
         train_datapipe = train_dataset_with_model.patch_attributes(train_datapipe)
-
 
         cv_datapipe = cv_dataset_with_model.as_feature_extracting_datapipe(
             self.dataset.batch_size_eval if self.dataset.batch_size_eval is not None else self.dataset.batch_size,
@@ -499,7 +512,7 @@ class OneModelMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
             member_model=self.target_model
         )
         test_dataset_with_model = self.load_one_dataset_with_model(test_dataset_with_model,
-                                                                   sensor_columns=seleceted_sensor_columns)
+                                                                   sensor_columns=selected_sensor_columns)
 
         test_datapipe = test_dataset_with_model.as_feature_extracting_datapipe(
             self.dataset.batch_size_eval if self.dataset.batch_size_eval is not None else self.dataset.batch_size,
@@ -535,11 +548,11 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
 
     pretrained_result_dir: Optional[str] = None
     dataset: datasets.DatasetOptions = HarvardSentencesDatasetOptions(train_sets='AUTO-PRETRAINING',
-                                                                      flatten_sensors_to_samples=False,
+                                                                      flatten_sensors_to_samples=True,
                                                                       label_reindex_col='patient',
                                                                       split_cv_from_test=False,
                                                                       pre_processing_pipeline='random_sample')
-    method: str = '2d_linear'
+    method: str = '1d_linear'
     weight_decay: float = 0.
 
     squeeze_target: ClassVar[bool] = True
@@ -634,13 +647,6 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
             )
 
     def load_models_selected_in_options(self):
-        # Load a "shadow" model (M_s) that was pretrained on 2 patients (M_s0, M_s1)
-        # Load a "target" model (M_t) that was pretrained on 2 patients (M_t0, M_t1)
-        #  |-> This leaves 3 patients unseen (u0, u1, u2)
-        # Train adv. on M_s0 vs. u0
-        # CV adv. on M_s1 vs u1
-        # Test Adv on M_t0,1 vs. u2 (downsample M_t0,1)
-        #  |-> The imbalance, while not great, at least simulates real-world scenario well
         self.shadow_model_results_map = dict()
         self.shadow_model_map = dict()
         self.target_model_map = dict()
@@ -684,23 +690,27 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
 
     def make_dataset_and_loaders(self, **kws):
         self.load_models()
+        sensor_columns = kws.get('sensor_columns', 'valid')
 
         # We'll use the CLI options to set the expected dataset - later assert that all models used same dataset
         dataset_cls = datasets.BaseDataset.get_dataset_by_name(self.dataset.dataset_name)
-        all_sets = dataset_cls.make_tuples_from_sets_str('*')
+        #all_sets = dataset_cls.make_tuples_from_sets_str('*')
 
         sm_pretrain_sets_d = {k: self.load_and_check_pretrain_opts(res, self.dataset.dataset_name, dataset_cls)
                               for k, res in self.shadow_model_results_map.items()}
         target_pretrain_sets_d = {k: self.load_and_check_pretrain_opts(res, self.dataset.dataset_name, dataset_cls)
-                              for k, res in self.target_model_results_map.items()}
+                                  for k, res in self.target_model_results_map.items()}
 
+        # All set tuples used across shadow models
         unique_shadow_sets = list(set(sum(sm_pretrain_sets_d.values(), list())))
+
+        # Select two shadow models from the train set to use in the CV
+        cv_shadow_models = np.random.choice(list(self.shadow_model_map.keys()), size=2)
 
         # -------------
         # Setup training data pipe for attacker
         shadow_training_sets_with_model: Dict[int, DatasetWithModel] = dict()
 
-        cv_shadow_models = np.random.choice(list(self.shadow_model_map.keys()), size=2)
         for ii, (sm_k, sm_pretrained_model) in enumerate(self.shadow_model_map.items()):
             if sm_k in cv_shadow_models:
                 continue
@@ -713,31 +723,33 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
                 member_model=sm_pretrained_model
             )
 
-        first_sm = next(iter(shadow_training_sets_with_model.values()))
-        shadow_training_sets_with_model[0] = self.load_one_dataset_with_model(first_sm,
-                                                                              sensor_columns=kws.get('sensor_columns',
-                                                                                                     'valid'))
-        selected_columns = first_sm.dataset.selected_columns
+        # Load the first o
+        #first_sm_k, first_sm = next(iter(shadow_training_sets_with_model.items()))
+        #shadow_training_sets_with_model[first_sm_k] = self.load_one_dataset_with_model(first_sm,
+        #                                                                               sensor_columns=sensor_columns)
+        #selected_columns = first_sm.dataset.selected_columns
+        selected_columns = None
         for k, st_with_model in shadow_training_sets_with_model.items():
-            if k == 0:
-                continue
-            self.load_one_dataset_with_model(shadow_training_sets_with_model[k], sensor_columns=selected_columns)
+            if selected_columns is None:
+                self.load_one_dataset_with_model(st_with_model, sensor_columns=sensor_columns)
+                selected_columns = st_with_model.dataset.selected_columns
+            else:
+                self.load_one_dataset_with_model(st_with_model, sensor_columns=selected_columns)
 
         train_pipes = [s.as_feature_extracting_datapipe(
             self.dataset.batch_size, batches_per_epoch=self.dataset.batches_per_epoch,
             device=self.device, multi_channel='2d' in self.method)
-
                        for k, s in shadow_training_sets_with_model.items()]
 
         training_datapipe = Concater(*train_pipes).shuffle()
-        training_datapipe = next(iter(shadow_training_sets_with_model.values())).patch_attributes(training_datapipe)
+        training_datapipe = shadow_training_sets_with_model[k].patch_attributes(training_datapipe)
+        #training_datapipe = next(iter(shadow_training_sets_with_model.values())).patch_attributes(training_datapipe)
         # --- End Training data pipe setup ---
 
         # -------------
         # -- Setup CV
-        #cv_pair_ix = 1
         shadow_cv_sets_with_model: Dict[int, DatasetWithModel] = dict()
-        for ii, (sm_k, sm_pretrained_model) in enumerate(reversed(self.shadow_model_map.items())):
+        for sm_k, sm_pretrained_model in self.shadow_model_map.items():
             if sm_k not in cv_shadow_models:
                 continue
             # sm_k and ii should be the same
@@ -749,22 +761,26 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
                 dataset_cls=dataset_cls,
                 member_model=sm_pretrained_model
             )
-        shadow_cv_sets_with_model = {k: self.load_one_dataset_with_model(st_with_model, selected_columns)
-                                     for k, st_with_model in shadow_cv_sets_with_model.items()}
+            shadow_cv_sets_with_model[sm_k] = self.load_one_dataset_with_model(shadow_cv_sets_with_model[sm_k],
+                                                                               selected_columns)
+        #shadow_cv_sets_with_model = {k: self.load_one_dataset_with_model(st_with_model, selected_columns)
+        #                             for k, st_with_model in shadow_cv_sets_with_model.items()}
 
         cv_datapipe = Concater(*[s.as_feature_extracting_datapipe(
             self.dataset.batch_size, batches_per_epoch=self.dataset.batches_per_epoch,
             device=self.device, multi_channel='2d' in self.method)
-                                 for k, s in shadow_cv_sets_with_model.items()]).shuffle()
-        cv_datapipe = next(iter(shadow_cv_sets_with_model.values())).patch_attributes(cv_datapipe)
+            for k, s in shadow_cv_sets_with_model.items()]
+                               ).shuffle()
+        #cv_datapipe = next(iter(shadow_cv_sets_with_model.values())).patch_attributes(cv_datapipe)
+        cv_datapipe = shadow_cv_sets_with_model[sm_k].patch_attributes(cv_datapipe)
         # --- End CV data pipe setup ---
 
         # -------------
         # -- Set up target as the test set
         unique_target_sets: List[Tuple] = list(set(sum(target_pretrain_sets_d.values(), list())))
-        # Sets used by either shadow models or target modelt
+        # Sets used by target models
         test_sets_with_model: Dict[int, DatasetWithModel] = dict()
-        for ii, (t_k, t_pretrained_model) in enumerate(self.target_model_map.items()):
+        for t_k, t_pretrained_model in self.target_model_map.items():
             target_pretrain_sets = target_pretrain_sets_d[t_k]
             test_sets_with_model[t_k] = DatasetWithModel(
                 p_tuples=unique_target_sets,
@@ -775,11 +791,13 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
 
             test_sets_with_model[t_k] = self.load_one_dataset_with_model(test_sets_with_model[t_k], selected_columns)
 
+        test_batch_size = self.dataset.batch_size if self.dataset.batch_size_eval is None else self.dataset.batch_size_eval
+        test_batches_per_epoch = self.dataset.batches_per_epoch if self.dataset.batches_per_eval_epoch is None else self.dataset.batches_per_eval_epoch
         test_datapipe = Concater(*[s.as_feature_extracting_datapipe(
-                self.dataset.batch_size_eval, batches_per_epoch=self.dataset.batches_per_eval_epoch,
-                device=self.device, multi_channel='2d' in self.method)
-                                 for k, s in test_sets_with_model.items()]).shuffle()
-        test_datapipe = test_sets_with_model[0].patch_attributes(test_datapipe)
+            batch_size=test_batch_size, batches_per_epoch=test_batches_per_epoch,
+            device=self.device, multi_channel='2d' in self.method)
+            for k, s in test_sets_with_model.items()]).shuffle()
+        test_datapipe = test_sets_with_model[t_k].patch_attributes(test_datapipe)
         # --- End Test data pipe setup ---
 
         self.dataset_with_model_d = dict(train=shadow_training_sets_with_model,
@@ -799,7 +817,7 @@ class InfoLeakageExperiment(bxp.Experiment):
          },
         default='shadow_classifier_mi')
 
-    attacker_model: ft.FineTuningModel = ft.FineTuningModel()
+    attacker_model: ft.FineTuningModel = ft.FineTuningModel(fine_tuning_method='1d_linear')
 
     # ---
     result_model: torch.nn.Module = field(default=None, init=False)
@@ -822,6 +840,9 @@ class InfoLeakageExperiment(bxp.Experiment):
         if getattr(self, 'initialized', False):
             return self
 
+        # Task needs to load the data in either 2d or 1d for the attacker model
+        self.task.method = self.attacker_model.fine_tuning_method
+
         # --
         # Load Datasets
         self.dataset_map, self.dl_map, self.eval_dl_map = self.task.make_dataset_and_loaders(
@@ -830,22 +851,21 @@ class InfoLeakageExperiment(bxp.Experiment):
 
         n_sensors = len(self.dataset_map['train'].selected_columns)
         self.target_labels = self.dataset_map['train'].get_target_labels()
+        num_classes = len(self.target_labels)
 
-        #member_model = self.task.shadow_model_map[0]
         T, C = self.task.get_member_model_output_shape()
         if '2d' in self.attacker_model.fine_tuning_method:
             attack_arr_shape = T, n_sensors, C
             self.model_kws = dict(input_shape=attack_arr_shape)
             self.result_model = MultiChannelAttacker(**self.model_kws)
         else:
-            attack_arr_shape =T * C
+            attack_arr_shape = T * C
             self.model_kws = dict(
-                input_size=attack_arr_shape, outputs=2,
+                input_size=attack_arr_shape, outputs=num_classes,
                 linear_hidden_n=self.attacker_model.linear_hidden_n,
                 n_layers=self.attacker_model.n_layers,
                 dropout_rate=self.attacker_model.dropout,
                 batch_norm=self.attacker_model.batch_norm,
-                # pre_trained_model_forward_kws = dict(features_only=True, mask=False),
                 pre_trained_model_output_key='x'
             )
             self.result_model = SingleChannelAttacker(**self.model_kws)
@@ -862,7 +882,7 @@ class InfoLeakageExperiment(bxp.Experiment):
                                                early_stopping_patience=self.task.early_stopping_patience,
                                                lr_adjust_on_cv_loss=self.task.lr_adjust_patience is not None,
                                                lr_adjust_on_plateau_kws=dict(patience=self.task.lr_adjust_patience,
-                                                                 factor=self.task.lr_adjust_factor),
+                                                                             factor=self.task.lr_adjust_factor),
                                                weight_decay=self.task.weight_decay,
                                                target_key=target_key,
                                                criterion=criterion,
@@ -914,25 +934,6 @@ class InfoLeakageExperiment(bxp.Experiment):
 
             output_performance_map[part_name] = utils.multiclass_performance(y_label_s, preds_df.idxmax(axis=1))
         logger.info(output_performance_map)
-
-        #performance_map = dict()
-        #clf_str_map = None
-        #if self.task.dataset.dataset_name == 'hvs':
-        #    target_shape = self.dataset_map['train'].get_target_shape()
-        #    print("Target shape in eval: " + str(target_shape))
-
-        #    kws = dict(threshold=(0.5 if target_shape == 1 else None))
-        #    clf_str_map = utils.make_classification_reports(outputs_map, **kws)
-        #    if target_shape == 1:
-        #        performance_map = {part_name: utils.performance(outputs_d['actuals'],
-        #                                                        outputs_d['preds'] > 0.5)
-        #                           for part_name, outputs_d in outputs_map.items()}
-        #    else:
-        #        performance_map = {part_name: utils.multiclass_performance(outputs_d['actuals'],
-        #                                                                   outputs_d['preds'].values.idxmax(axis=1))
-        #                                                                   #outputs_d['preds'].argmax(1))
-        #                           for part_name, outputs_d in outputs_map.items()}
-        #    print(performance_map)
 
         self.outputs_map, self.output_cm_map, self.performance_map, self.clf_str_map = [outputs_map, output_cm_map,
                                                                                         output_performance_map,
@@ -1115,10 +1116,7 @@ if __name__ == """__main__""":
     from simple_parsing import ArgumentParser
 
     parser = ArgumentParser(description="Information Leakage Experiments")
-    # parser.add_arguments("--pretrained_inspection_plots", action='store_true', default=False)
     parser.add_arguments(InfoLeakageExperiment, dest='info_leakage')
-    # parser.add_arguments(TransferLearningOptions, dest='transfer_learning')
-    # parser.add_arguments(TransferLearningResultParsingOptions, dest='tl_result_parsing')
     args = parser.parse_args()
     tl: InfoLeakageExperiment = args.info_leakage
     tl.run()

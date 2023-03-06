@@ -260,8 +260,6 @@ class DatasetOptions(JsonSerializable):
             three-tuple of (1) map to original dataset (2) map to the constructed dataloaders and
             (3) Similar to two, but not shuffled and larger batch size (for evaluation)
         """
-        # from torchvision import transforms
-        # raise ValueError("BREAK")
         base_data_kws = dict() if base_data_kws is None else base_data_kws
         if dataset_cls is None:
             dataset_cls = BaseDataset.get_dataset_by_name(self.dataset_name)

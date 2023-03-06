@@ -7,6 +7,7 @@ import scipy.io
 import torch
 import torchvision.transforms
 from torch.utils import data as tdata
+from sklearn.model_selection import train_test_split
 
 from tqdm.auto import tqdm
 
@@ -450,10 +451,15 @@ class BaseASPEN(BaseDataset):
         # split_time = 0.75
         from tqdm.auto import tqdm
 
+        # Get the current selected samples
         selected_keys_arr = self.flat_keys[self.selected_flat_indices]
+        # Determine the time range (start, stop) for the selected samples
         index_start_stop = [(self.flat_index_map.at[a[0]].min(), self.flat_index_map.at[a[0]].max())
                             for a in tqdm(selected_keys_arr)]
+        # If floating point, assume it's some fraction of the maximum window start time (i.e. the whole time)
         split_time = max(a for a, b, in index_start_stop) * split_time if isinstance(split_time, float) else split_time
+
+        # For each (start, stop) time, bucket into left/within vs. right/outside the time
         left_side_indices, right_side_indices = list(), list()
         for a, b in index_start_stop:
             if a < split_time:
@@ -464,13 +470,13 @@ class BaseASPEN(BaseDataset):
         left_side_indices = np.array(left_side_indices)
         right_side_indices = np.array(right_side_indices)
 
+        # Create new datasets, with references to the underlying data, just selecting different indices
         left_dataset = self.__class__(data_from=self, selected_word_indices=left_side_indices)
         right_dataset = self.__class__(data_from=self, selected_word_indices=right_side_indices)
 
         return left_dataset, right_dataset
 
     def split_select_random_key_levels(self, keys=('patient', 'sent_code'), **train_test_split_kws):
-        from sklearn.model_selection import train_test_split
         keys = list(keys) if isinstance(keys, tuple) else keys
         # In case we have already split - check for existing selected indices
         if getattr(self, 'selected_flat_indices') is None:

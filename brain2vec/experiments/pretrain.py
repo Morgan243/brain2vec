@@ -9,6 +9,7 @@ from brain2vec.experiments import load_results_to_frame
 
 from simple_parsing import ArgumentParser, choice, subgroups
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Optional
 import torch
 
@@ -25,24 +26,25 @@ class SemisupervisedCodebookTaskOptions(mxp.TaskOptions):
 @dataclass
 class SemiSupervisedExperiment(mxp.Experiment):
     model: bmm.ModelOptions = subgroups(
-        {"brain2vec": brain2vec.Brain2VecOptions,
+        {"brain2vec": partial(brain2vec.Brain2VecOptions),
          #'dummy': brain2vec.Brain2VecOptions
          },
-        default=brain2vec.Brain2VecOptions()
+        default='brain2vec'
     )
 
     dataset: datasets.DatasetOptions = subgroups(
         {
-            "hvs": harvard_sentences.HarvardSentencesDatasetOptions,#(pre_processing_pipeline='random_sample'),
+            "hvs": partial(harvard_sentences.HarvardSentencesDatasetOptions, pre_processing_pipeline='random_sample'),
              # Not actually tested
              #"nww": northwestern_words.NorthwesternWordsDatasetOptions
         },
-        default=harvard_sentences.HarvardSentencesDatasetOptions(pre_processing_pipeline='random_sample'))
+        default='hvs')
 
     task: mxp.TaskOptions = subgroups(
-        {"semi_supervised": SemisupervisedCodebookTaskOptions,
+        {"semi_supervised": partial(SemisupervisedCodebookTaskOptions),
          "dummy": SemisupervisedCodebookTaskOptions},
-        default=SemisupervisedCodebookTaskOptions())
+        default='semi_supervised')
+        #default=SemisupervisedCodebookTaskOptions())
 
     skip_if_results_exists_in: bool = False
 

@@ -5,6 +5,7 @@ from tqdm.auto import tqdm
 import attr
 from mmz import utils
 import torch
+from typing import Optional
 
 with_logger = utils.with_logger(prefix_name=__name__)
 
@@ -767,14 +768,37 @@ class RandomStim(DictTrf):
     output_key = attr.ib('random_stim')
 
     window_size = attr.ib(pd.Timedelta(0.5, 's'))
+    slice_selection: Optional[slice] = attr.ib(None)
 
     def process(self, data_map):
         src_s = data_map[self.index_source_stim_key]
 
         random_stim = pd.Series(0, index=src_s.index)
-
         last_t = random_stim.index.max() - self.window_size
-        random_ix = random_stim.loc[:last_t].sample(n=self.n, replace=self.replace).index.unique()
+
+        # What we'll sample from to avoid sampling indices that cannot be used
+        win_truncated_random_stim = random_stim.loc[:last_t]
+
+        if self.slice_selection is not None:
+            assert self.slice_selection.step is None
+
+            if isinstance(self.slice_selection.start, (int, float)) and isinstance(self.slice_selection.stop, (int, float)):
+                self.logger.info("Fractional slice detected - converting to fraction of the time stamps ")
+                _max_t = win_truncated_random_stim.index.max()
+                _slice = slice(_max_t * self.slice_selection.start, _max_t * self.slice_selection.stop)
+            elif isinstance(self.slice_selection.start, str) and isinstance(self.slice_selection.stop, str):
+                _slice = self.slice_selection
+            else:
+                raise ValueError(f"Don't understand slice: {self.slice_selection}")
+
+            self.logger.info(
+                f"Applying slice selection {_slice} to {len(win_truncated_random_stim)} samples in "
+                f"{win_truncated_random_stim.index.min()} - {win_truncated_random_stim.index.max()}"
+            )
+            win_truncated_random_stim = win_truncated_random_stim.loc[_slice]
+            self.logger.info(f"After slice selection, can sample from {len(win_truncated_random_stim)} samples")
+
+        random_ix = win_truncated_random_stim.sample(n=self.n, replace=self.replace).index.unique()
         self.logger.info(f"Sampled {len(random_ix)} times from {self.index_source_stim_key}")
         random_stim.loc[random_ix] = 1
         self.logger.info(f"Total random indices in output: {random_stim.sum()}")
@@ -813,11 +837,21 @@ class WindowSampleIndicesFromIndex(DictTrf):
     stim_value_remap = attr.ib(None)
     stim_pre_process_f = attr.ib(None)
 
-    @staticmethod
-    def step_through_target_indexes(stim, target_indexes, win_size, index_shift, expected_window_samples):
-        return [stim.loc[offs + index_shift:offs + win_size + index_shift].iloc[:expected_window_samples].index
-                for offs in target_indexes
-                if len(stim.loc[offs + index_shift:offs + win_size + index_shift]) >= expected_window_samples]
+    @classmethod
+    def step_through_target_indexes(cls, stim, target_indexes, win_size, index_shift, expected_window_samples):
+        valid_indices = list()
+        for offs in target_indexes:
+            _s = stim.loc[offs + index_shift:offs + win_size + index_shift]
+            if len(_s) >= expected_window_samples:
+               valid_indices.append(_s.iloc[:expected_window_samples].index)
+            else:
+                cls.logger.warning(f"Stim had {len(_s)} samples, not meeting expected size of {expected_window_samples}")
+
+        return valid_indices
+
+        #return [stim.loc[offs + index_shift:offs + win_size + index_shift].iloc[:expected_window_samples].index
+        #        for offs in target_indexes
+        #        if len(stim.loc[offs + index_shift:offs + win_size + index_shift]) >= expected_window_samples]
 
     def process(self, data_map):
         stim = data_map[self.stim_key]
@@ -837,9 +871,9 @@ class WindowSampleIndicesFromIndex(DictTrf):
         expected_window_samples = int(fs * win_size.total_seconds())
 
         if self.method == 'target_equality':
-            target_indexes = (stim.pipe(stim_pre_process_f) == self.stim_target_value) \
-                .pipe(lambda s: s[s] if self.sample_n is None else (
-                s[s].sample(n=self.sample_n) if len(s[s]) > self.sample_n else s[s])).index.tolist()
+            target_indexes = (
+                    stim.pipe(stim_pre_process_f) == self.stim_target_value).pipe(
+                lambda s: s[s] if self.sample_n is None else (s[s].sample(n=self.sample_n) if len(s[s]) > self.sample_n else s[s])).index.tolist()
             # target_indices = [stim.loc[offs + index_shift:offs + win_size + index_shift].iloc[:expected_window_samples].index
             #                  for offs in target_indexes
             #                  if len(stim.loc[offs + index_shift:offs + win_size + index_shift]) >= expected_window_samples]

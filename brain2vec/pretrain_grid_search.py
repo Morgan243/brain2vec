@@ -57,7 +57,8 @@ class PretrainGridSearch(JsonSerializable):
                     #for n_enc_layers in [1, 3, 6, 9, 12]
                     #for n_enc_layers in [1, 3, 6]
                     #for n_enc_layers in [3, 6, 9, 12]
-                 for n_enc_layers in [5, 6, 7, 8, 9]
+                 #for n_enc_layers in [5, 6, 7, 8, 9]
+                 for n_enc_layers in [1, 2, 3, 4]
                  ]
 
         kws_splits = np.array_split(kws_l, self.n_splits)
