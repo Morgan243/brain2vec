@@ -289,14 +289,6 @@ class FineTuningExperiment(bxp.Experiment):
     n_rs_clf_iter: Optional[int] = None
     rs_clf: Optional[str] = 'svm'
     run_ml: bool = True
-    # Don't need model options directly
-    # TODO: make a fine tuning model options to capture at elast 'method' in task above
-    #model: bmp.ModelOptions = subgroups(
-    #    {
-    #        'cog2vec': btf.Cog2VecOptions,
-    #    },
-    #    default=btf.Cog2VecOptions()
-    #)
 
     @classmethod
     def load_pretrained_model_results(cls,
@@ -738,7 +730,7 @@ class TLTrainer(bmp.Trainer):
         if isinstance(self.criterion, (torch.nn.BCEWithLogitsLoss, torch.nn.BCELoss)):
             target = target.float()
 
-        model_output_d = model_output_d.reshape(*target.shape)
+        #model_output_d = model_output_d.reshape(*target.shape)
 
         crit_loss = self.criterion(model_output_d.float() if isinstance(self.criterion, torch.nn.BCEWithLogitsLoss) else model_output_d,
                                    target)

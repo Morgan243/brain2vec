@@ -33,6 +33,7 @@ from simple_parsing import subgroups
 #from ecog_speech import result_parsing
 from torchdata.datapipes import iter as td_iter #import IterableWrapper, Mapper, Concater, Sampler
 from torchdata.datapipes.map import SequenceWrapper, Concater
+from torch.nn import functional as F
 from torch.utils.data import RandomSampler
 from torch.utils.data import default_collate
 from brain2vec.models import base_fine_tuners as ft_models
@@ -204,13 +205,15 @@ class MultiChannelAttacker(torch.nn.Module):
 @dataclass
 class DatasetWithModel:
     p_tuples: List[Tuple]
-    reindex_map: Dict
-    dataset_cls: BaseDataset
+    reindex_map: Optional[Dict]
+    dataset_cls: HarvardSentences
 
     member_model: torch.nn.Module
     mc_member_model: Optional[torch.nn.Module] = None
 
     dataset: Optional[HarvardSentences] = None
+
+    target_shape: int = 2
 
     def create_mc_model(self):
         self.mc_member_model = bft.MultiChannelFromSingleChannel(input_shape=(
@@ -229,6 +232,7 @@ class DatasetWithModel:
                                                    dataset_cls=self.dataset_cls,
                                                    member_model=self.member_model,
                                                    mc_member_model=self.mc_member_model,
+                                                   target_shape=self.target_shape,
                                                    dataset=split_0)
 
         split_1_dset_with_model = DatasetWithModel(p_tuples=self.p_tuples,
@@ -236,6 +240,7 @@ class DatasetWithModel:
                                                    dataset_cls=self.dataset_cls,
                                                    member_model=self.member_model,
                                                    mc_member_model=self.mc_member_model,
+                                                   target_shape=self.target_shape,
                                                    dataset=split_1)
 
         return split_0_dset_with_model, split_1_dset_with_model
@@ -272,10 +277,8 @@ class DatasetWithModel:
 
             model_out_dataset = model_out_dataset.map(run_sc_model)
 
-        from torch.nn import functional as F
-        #num_classes = len(self.dataset.get_target_labels()[1])
         def _one_hot_target(_d):
-            _d['target_arr'] = F.one_hot(_d['target_arr'], num_classes=2)#num_classes)
+            _d['target_arr'] = F.one_hot(_d['target_arr'], num_classes=self.target_shape)#num_classes)
             return _d
 
         if batches_per_epoch is not None:
@@ -300,7 +303,7 @@ class DatasetWithModel:
 
     def patch_attributes(self, obj):
         def _get_target_shape(*args):
-            return 2
+            return self.target_shape
 
         obj.selected_columns = self.dataset.selected_columns
         #obj.get_target_shape = self.dataset.get_target_shape
@@ -315,7 +318,7 @@ class DatasetWithModelBaseTask(bxp.TaskOptions):
         sm_member_dataset_opts = results['dataset_options']
         assert sm_member_dataset_opts['dataset_name'] == expected_dataset_name
         pretrain_sets = dataset_cls.make_tuples_from_sets_str(sm_member_dataset_opts['train_sets'])
-        assert len(pretrain_sets) == 2
+        assert len(pretrain_sets) == expected_n_pretrain_sets
         return pretrain_sets
 
     @classmethod
@@ -379,17 +382,97 @@ class DatasetWithModelBaseTask(bxp.TaskOptions):
 
 @with_logger
 @dataclass
-class ReidentificationTask(bxp.TaskOptions):
-    """
-    (1) take as input a pretrained model path - train_sets?
-    """
+class ReidentificationTask(DatasetWithModelBaseTask):
     task_name: str = "reidentification_classification_fine_tuning"
-    dataset: HarvardSentencesDatasetOptions = HarvardSentencesDatasetOptions(train_sets='AUTO-PRETRAINING',
-                                                                             flatten_sensors_to_samples=True,
-                                                                             label_reindex_col='patient',
-                                                                             split_cv_from_test=False,
-                                                                             pre_processing_pipeline='random_sample')
-    pretrained_model: bxp.ResultInputOptions = None
+    dataset: datasets.DatasetOptions = HarvardSentencesDatasetOptions(train_sets='AUTO-PRETRAINING',
+                                                                      flatten_sensors_to_samples=True,
+                                                                      label_reindex_col='patient',
+                                                                      split_cv_from_test=False,
+                                                                      pipeline_params=dict(),
+                                                                      pre_processing_pipeline='random_sample')
+
+    pretrained_model_input: bxp.ResultInputOptions = None
+
+    train_sample_slice: ClassVar[slice] = slice(0, 0.3)
+    test_sample_slice: ClassVar[slice] = slice(0.7, 1.)
+
+    weight_decay: float = 0.
+    squeeze_target: ClassVar[bool] = True
+
+    def make_criteria_and_target_key(self):
+        criterion = torch.nn.CrossEntropyLoss()
+        target_key = 'target_arr'
+        return criterion, target_key
+
+    def get_member_model_output_shape(self):
+        return self.pretrained_model.T, self.pretrained_model.C
+
+    def make_dataset_and_loaders(self, **kws):
+        dataset_cls = datasets.BaseDataset.get_dataset_by_name(self.dataset.dataset_name)
+
+        self.pretrained_model, self.pretrained_model_opts = self.load_pretrained_model_results(
+            self.pretrained_model_input.result_file,  self.pretrained_model_input.model_base_path)
+
+        pretrained_dset_options = self.pretrained_model_opts['dataset_options']
+        assert pretrained_dset_options['dataset_name'] == self.dataset.dataset_name
+        pretrain_sets = dataset_cls.make_tuples_from_sets_str(pretrained_dset_options['train_sets'])
+
+        if isinstance(self.dataset.pipeline_params, str):
+            self.dataset.pipeline_params = eval(self.dataset.pipeline_params)
+
+        train_dataset_with_model = DatasetWithModel(
+            p_tuples=pretrain_sets,
+            reindex_map=None,
+            dataset_cls=dataset_cls,
+            member_model=self.pretrained_model,
+            target_shape=len(pretrain_sets)
+        )
+        #self.dataset.pipeline_params = {"rnd_stim__slice_selection": self.train_sample_slice}
+        self.dataset.pipeline_params.update({"rnd_stim__slice_selection": self.train_sample_slice})
+        self.load_one_dataset_with_model(train_dataset_with_model)
+
+        selected_columns = train_dataset_with_model.dataset.selected_columns
+
+        train_dataset_with_model, cv_dataset_with_model = train_dataset_with_model.split_on_key_level(
+            keys=('patient', 'sent_code'),
+            test_size=0.25)
+
+        test_dataset_with_model = DatasetWithModel(
+            p_tuples=pretrain_sets,
+            reindex_map=None,
+            dataset_cls=dataset_cls,
+            member_model=self.pretrained_model,
+            target_shape=len(pretrain_sets)
+        )
+        #self.dataset.pipeline_params = {"rnd_stim__slice_selection": self.test_sample_slice}
+        self.dataset.pipeline_params.update({"rnd_stim__slice_selection": self.test_sample_slice})
+        self.load_one_dataset_with_model(test_dataset_with_model, sensor_columns=selected_columns)
+
+        # -----
+        train_pipe = train_dataset_with_model.as_feature_extracting_datapipe(
+            self.dataset.batch_size, batches_per_epoch=self.dataset.batches_per_epoch,
+            device=self.device, multi_channel=False
+        )
+
+        test_batch_size = self.dataset.batch_size if self.dataset.batch_size_eval is None else self.dataset.batch_size_eval
+        test_batches_per_epoch = self.dataset.batches_per_epoch if self.dataset.batches_per_eval_epoch is None else self.dataset.batches_per_eval_epoch
+
+        cv_pipe = cv_dataset_with_model.as_feature_extracting_datapipe(
+            test_batch_size, batches_per_epoch=test_batches_per_epoch,
+            device=self.device, multi_channel=False
+        )
+
+        test_pipe = test_dataset_with_model.as_feature_extracting_datapipe(
+            test_batch_size, batches_per_epoch=test_batches_per_epoch,
+            device=self.device, multi_channel=False
+        )
+
+        self.dataset_with_model_d = dict(train=train_dataset_with_model,
+                                         cv=cv_dataset_with_model,
+                                         test=test_dataset_with_model)
+        ret_datapipe_d = dict(train=train_pipe, cv=cv_pipe, test=test_pipe)
+
+        return dict(ret_datapipe_d), dict(ret_datapipe_d), dict(ret_datapipe_d)
 
 
 @with_logger
@@ -813,7 +896,8 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
 class InfoLeakageExperiment(bxp.Experiment):
     task: ShadowClassifierMembershipInferenceFineTuningTask = subgroups(
         {'shadow_classifier_mi': ShadowClassifierMembershipInferenceFineTuningTask,
-         'one_model_mi': OneModelMembershipInferenceFineTuningTask
+         'one_model_mi': OneModelMembershipInferenceFineTuningTask,
+         'reid': ReidentificationTask
          },
         default='shadow_classifier_mi')
 
@@ -850,8 +934,9 @@ class InfoLeakageExperiment(bxp.Experiment):
         )
 
         n_sensors = len(self.dataset_map['train'].selected_columns)
-        self.target_labels = self.dataset_map['train'].get_target_labels()
+        self.target_label_map, self.target_labels = self.dataset_map['train'].get_target_labels()
         num_classes = len(self.target_labels)
+        logger.info(f"Labels for {num_classes} classes: {self.target_labels}")
 
         T, C = self.task.get_member_model_output_shape()
         if '2d' in self.attacker_model.fine_tuning_method:
@@ -901,7 +986,10 @@ class InfoLeakageExperiment(bxp.Experiment):
 
         # TODO: This will not work for other tasks
         #class_val_to_label_d, class_labels = self.dataset_map['train'].get_target_labels()
-        class_val_to_label_d = {0: 'nonmember', 1: 'member'}
+        if isinstance(self.task, ReidentificationTask):
+             class_val_to_label_d, class_labels = self.dataset_map['train'].get_target_labels()
+        else:
+            class_val_to_label_d = {0: 'nonmember', 1: 'member'}
         class_labels = list(class_val_to_label_d.values())
 
         output_cm_map = dict()
