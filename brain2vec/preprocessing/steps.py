@@ -145,7 +145,7 @@ class ApplySensorSelection(DictTrf):
         if self.selection is None:
             self.logger.info("Checking data_map for good_sensor_columns")
             selected_cols = data_map.get('good_sensor_columns')
-            self.logger.inf(f"Got: {selected_cols}")
+            self.logger.info(f"Got: {selected_cols}")
         elif isinstance(self.selection, list):
             self.logger.info(f"Selection of columns passed to sensor selection")
             selected_cols = self.selection

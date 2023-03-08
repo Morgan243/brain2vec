@@ -186,6 +186,7 @@ class DatasetOptions(JsonSerializable):
     cv_sets: Optional[str] = None
     test_sets: Optional[str] = None
 
+    sensor_columns: Optional[str] = None
     data_subset: str = 'Data'
     output_key: str = 'signal_arr'
     label_reindex_col: Optional[str] = None#"patient"
@@ -228,7 +229,7 @@ class DatasetOptions(JsonSerializable):
                                   train_data_kws=None, cv_data_kws=None, test_data_kws=None,
                                   train_sets_str=None, cv_sets_str=None, test_sets_str=None,
                                   train_p_tuples=None, cv_p_tuples=None, test_p_tuples=None,
-                                  train_sensor_columns='valid',
+                                  train_sensor_columns=None,
                                   pre_processing_pipeline=None,
                                   additional_transforms=None,
                                   train_split_kws=None, test_split_kws=None,
@@ -273,6 +274,9 @@ class DatasetOptions(JsonSerializable):
         if test_p_tuples is None:
             test_p_tuples = dataset_cls.make_tuples_from_sets_str(self.test_sets if test_sets_str is None
                                                                   else test_sets_str)
+
+        if train_sensor_columns is None and self.sensor_columns is not None:
+            train_sensor_columns = self.sensor_columns
 
         train_split_kws = dict() if train_split_kws is None else train_split_kws
         #test_split_kws = dict() if test_split_kws is None else test_split_kws
@@ -334,6 +338,11 @@ class DatasetOptions(JsonSerializable):
                 ShuffleDimension()
             )
 
+        # Holdout should also use good for pt if that was set, otherwise, what training selected
+        if train_sensor_columns == 'good_for_participant':
+            holdout_sensor_columns = train_sensor_columns
+        else:
+            holdout_sensor_columns = train_dataset.selected_columns
 
         dataset_map['train'] = train_dataset
 
@@ -341,7 +350,7 @@ class DatasetOptions(JsonSerializable):
         if cv_kws['patient_tuples'] is not None:
             logger.info("+" * 50)
             logger.info(f"Using {cv_kws['patient_tuples']}")
-            dataset_map['cv'] = dataset_cls(sensor_columns=train_dataset.selected_columns, **cv_kws)
+            dataset_map['cv'] = dataset_cls(sensor_columns=holdout_sensor_columns, **cv_kws)
         # HVS is special case: CV set is automatic, and split at the participant-sentence code level
        #elif dataset_cls == HarvardSentences:
         elif dataset_cls.__name__ == 'HarvardSentences':
@@ -385,7 +394,7 @@ class DatasetOptions(JsonSerializable):
         # TODO / Note: this could have a complex interplay if used tih flatten sensors or 2d data
         if test_kws['patient_tuples'] is not None:
             logger.info(f"Loading test set using KWS: {test_kws}")
-            dataset_map['test'] = dataset_cls(sensor_columns=train_dataset.selected_columns, **test_kws)
+            dataset_map['test'] = dataset_cls(sensor_columns=holdout_sensor_columns, **test_kws)
         else:
             logger.info(" - No test datasets provided - ")
 

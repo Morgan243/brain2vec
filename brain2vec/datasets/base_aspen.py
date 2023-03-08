@@ -167,10 +167,10 @@ class BaseASPEN(BaseDataset):
 
             # ----
             # SENSOR SELECTION LOGIC - based on the patients loaded - which sensors do we use?
-            if isinstance(self.sensor_columns, str) and self.sensor_columns == 'good_for_participant':
-                self.logger.info("Will only use each participants good sensors")
-                self.selected_columns = None
-            elif self.sensor_columns is None or isinstance(self.sensor_columns, str):
+            #if isinstance(self.sensor_columns, str) and self.sensor_columns == 'good_for_participant':
+            #    self.logger.info("Will only use each participants good sensors")
+            #    self.selected_columns = None
+            if self.sensor_columns is None or isinstance(self.sensor_columns, str):
                 # Get each participant's good and bad sensor columns into a dictionary
                 good_and_bad_tuple_d = {l_p_s_t_tuple: (mat_d['good_sensor_columns'], mat_d['bad_sensor_columns'])
                                         for l_p_s_t_tuple, mat_d in self.data_maps.items()}
@@ -189,8 +189,13 @@ class BaseASPEN(BaseDataset):
                 # Default to 'union' options if sensor columns not explicitly provided
                 self.sensor_columns = 'union' if self.sensor_columns is None else self.sensor_columns
 
+                # GOOD FOR PT: Use all good sensor - only makes sense when flattening sensors to samples
+                if self.sensor_columns == 'good_for_participant':
+                    assert self.flatten_sensors_to_samples
+                    self.selected_columns = None
+                    #self.pt_selected_columns =
                 # UNION: Select all good sensors from all inputs, zeros will be filled for those missing
-                if self.sensor_columns == 'union':
+                elif self.sensor_columns == 'union':
                     # Create a sorted list of all sensor IDs found in the good sensor sets extracted
                     # Only allow good sensors that are not in the bad sensor list
                     self.selected_columns = sorted(list({_gs for k, (gs, bs) in good_and_bad_tuple_d.items()
@@ -201,8 +206,11 @@ class BaseASPEN(BaseDataset):
                     self.selected_columns = sorted(list(s[0].intersection(*s[1:])))
                 else:
                     raise ValueError("Unknown sensor columns argument: " + str(self.sensor_columns))
-                self.logger.info(f"Selected {len(self.selected_columns)} columns using {self.sensor_columns} method: "
-                                 f"{', '.join(map(str, self.selected_columns))}")
+
+                if self.selected_columns is not None:
+                    self.logger.info(f"Selected {len(self.selected_columns)} columns using {self.sensor_columns} method: "
+                                     f"{', '.join(map(str, self.selected_columns))}")
+
             elif isinstance(self.sensor_columns, list):
                 self.selected_columns = self.sensor_columns
             else:
@@ -224,14 +232,21 @@ class BaseASPEN(BaseDataset):
             # Specify types to keep dataframe size manageable - ORDER MATTERS
             key_col_dtypes = {'label': 'int8', 'sample_ix': 'int32', 'location': 'string',
                               'patient': 'int8', 'session': 'int8', 'trial': 'int8'}
-            key_cols = list(key_col_dtypes.keys())
+            self.key_cols = list(key_col_dtypes.keys())
+            if self.flatten_sensors_to_samples:
+                # This will add a new field that uniquely identifies a sample (the 'channel')
+                cols = self.key_cols + ['start_t', 'stop_t', 'indices']
+                self.key_cols.insert(2, 'channel')
+                self.k_select_offset = 3
+            else:
+                self.k_select_offset = 2
 
+            # sample_index_maps maps the pt. to the class label, to a list of time series indices for pandas
             for l_p_s_t, index_map in self.sample_index_maps.items():
                 self.logger.info(f"Processing participant {l_p_s_t} index, having keys: {list(index_map.keys())}")
                 # Pull out the dictionary results of pipeline outputs for this patients
                 _data_map = self.data_maps[l_p_s_t]
                 # Determine columns
-                cols = key_cols + ['start_t', 'stop_t', 'indices']
                 key_l = list(l_p_s_t)
 
                 # Unpack a list of data tuples that will create a Dataframe
@@ -256,23 +271,20 @@ class BaseASPEN(BaseDataset):
                     nearest_ixes = wsst_df.index.get_indexer(p_ix_df.start_t, method='nearest')
                     p_ix_df['sent_code'] = wsst_df.iloc[nearest_ixes].stim_sentcode.values
 
+                if self.flatten_sensors_to_samples:
+                    self.logger.info(
+                        f"flatten_sensors_to_samples selected - creating channel/sensor labels for samples")
+                    pt_selected_columns = _data_map['selected_columns']
+                    # Channel column will be exploded on to lengthen dataframe by X self.selected_columns
+                    p_ix_df['channel'] = [pt_selected_columns] * len(p_ix_df)
+                    self.logger.debug("exploding sensor data - does this take a while?")
+                    # Repeat rows by unique values in the list of channels in each row
+                    p_ix_df = p_ix_df.explode('channel')
+
                 sample_ix_df_l.append(p_ix_df)
 
             self.logger.info(f"Combining all of {len(sample_ix_df_l)} index frames")
             self.sample_ix_df = pd.concat(sample_ix_df_l).reset_index(drop=True)
-            self.k_select_offset = 2
-            if self.flatten_sensors_to_samples:
-                self.logger.info(f"flatten_sensors_to_samples selected - creating channel/sensor labels for samples")
-                # Channel column will be exploded on to lengthen dataframe by X self.selected_columns
-                self.sample_ix_df['channel'] = [self.selected_columns] * len(self.sample_ix_df)
-                # This will add a new field that uniquely identifies a sample (the 'channel')
-                key_cols.insert(2, 'channel')
-                self.k_select_offset += 1
-                self.logger.debug("exploding sensor data - does this take a while?")
-                # Repeat rows by unique values in the list of channels in each row
-                self.sample_ix_df = self.sample_ix_df.explode('channel')
-
-            self.key_cols = key_cols
 
             # Auto make a reindex map from a reindex_col's every unique value
             if self.label_reindex_col is not None:
@@ -285,20 +297,13 @@ class BaseASPEN(BaseDataset):
                 self.label_reindex_map = {l: i for i, l in enumerate(unique_reindex_labels)}
 
             self.logger.info("Converting dataframe to a flat list of key variables (self.flat_keys)")
-            self.ixed_sample_ix_df = self.sample_ix_df.set_index(key_cols).sort_index()
-            #key_df = self.sample_ix_df[self.key_cols]
+            self.ixed_sample_ix_df = self.sample_ix_df.set_index(self.key_cols).sort_index()
             self.flat_keys = self.ixed_sample_ix_df.index
-            #self.flat_keys = np.array(list(zip(key_df.to_records(index=False).tolist(),
-            #                                   key_df.iloc[:, k_select_offset:].to_records(index=False).tolist())),
-            #                          dtype='object')
-            self.logger.info(f"Extracting mapping of ({key_cols})->indices")
-            self.flat_index_map = self.ixed_sample_ix_df.indices#.to_dict()
+            self.logger.info(f"Extracting mapping of ({self.key_cols})->indices")
+            self.flat_index_map = self.ixed_sample_ix_df.indices
             self.flat_ix_map = self.ixed_sample_ix_df.start_ix
 
-            # ## END NEW VERSION
-
             self.logger.info(f"Length of flat index map: {len(self.flat_index_map)}")
-
 
         else:
             # print("Warning: using naive shared-referencing across objects - only use when feeling lazy")

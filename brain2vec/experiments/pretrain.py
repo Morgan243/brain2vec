@@ -34,7 +34,9 @@ class SemiSupervisedExperiment(mxp.Experiment):
 
     dataset: datasets.DatasetOptions = subgroups(
         {
-            "hvs": partial(harvard_sentences.HarvardSentencesDatasetOptions, pre_processing_pipeline='random_sample'),
+            "hvs": partial(harvard_sentences.HarvardSentencesDatasetOptions,
+                           pre_processing_pipeline='random_sample', sensor_columns='good_for_participant'
+                           ),
              # Not actually tested
              #"nww": northwestern_words.NorthwesternWordsDatasetOptions
         },
