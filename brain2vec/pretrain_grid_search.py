@@ -52,13 +52,12 @@ class PretrainGridSearch(JsonSerializable):
             #dict(positional_encoding_method='independent', temporal_pos_encoding=False, ras_pos_encoding=False),
             #dict(positional_encoding_method='independent', temporal_pos_encoding=False, ras_pos_encoding=True),
         ]
-        kws_l = [dict(n_encoder_layers=n_enc_layers, **pos_opts_kws)
+        kws_l = [dict(n_encoder_layers=n_enc_layers,
+                      quant_num_vars=quant_num_vars,
+                      **pos_opts_kws)
                  for pos_opts_kws in pos_opts
-                    #for n_enc_layers in [1, 3, 6, 9, 12]
-                    #for n_enc_layers in [1, 3, 6]
-                    #for n_enc_layers in [3, 6, 9, 12]
-                 #for n_enc_layers in [5, 6, 7, 8, 9]
-                 for n_enc_layers in [1, 2, 3, 4]
+                 for n_enc_layers in [3, 4, 5]
+                 for quant_num_vars in [80]
                  ]
 
         kws_splits = np.array_split(kws_l, self.n_splits)

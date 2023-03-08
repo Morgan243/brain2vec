@@ -167,7 +167,10 @@ class BaseASPEN(BaseDataset):
 
             # ----
             # SENSOR SELECTION LOGIC - based on the patients loaded - which sensors do we use?
-            if self.sensor_columns is None or isinstance(self.sensor_columns, str):
+            if isinstance(self.sensor_columns, str) and self.sensor_columns == 'good_for_participant':
+                self.logger.info("Will only use each participants good sensors")
+                self.selected_columns = None
+            elif self.sensor_columns is None or isinstance(self.sensor_columns, str):
                 # Get each participant's good and bad sensor columns into a dictionary
                 good_and_bad_tuple_d = {l_p_s_t_tuple: (mat_d['good_sensor_columns'], mat_d['bad_sensor_columns'])
                                         for l_p_s_t_tuple, mat_d in self.data_maps.items()}
@@ -200,11 +203,14 @@ class BaseASPEN(BaseDataset):
                     raise ValueError("Unknown sensor columns argument: " + str(self.sensor_columns))
                 self.logger.info(f"Selected {len(self.selected_columns)} columns using {self.sensor_columns} method: "
                                  f"{', '.join(map(str, self.selected_columns))}")
-            else:
+            elif isinstance(self.sensor_columns, list):
                 self.selected_columns = self.sensor_columns
+            else:
+                raise ValueError(f"Can't use sensor_columns of {type(self.sensor_columns)} = {self.sensor_columns}")
 
-            self.sensor_count = len(self.selected_columns)
-            self.logger.info(f"Selected {self.sensor_count} sensors")
+            if self.selected_columns is not None:
+                self.sensor_count = len(self.selected_columns)
+                self.logger.info(f"Selected {self.sensor_count} sensors")
 
             # Update each patient's dataset to adjust selected sensors based on above processes
             self.sensor_selection_trf = ps.ApplySensorSelection(selection=self.selected_columns)
@@ -514,6 +520,7 @@ class BaseASPEN(BaseDataset):
             self.selected_flat_keys = self.flat_keys[self.selected_flat_indices]
         else:
             self.selected_flat_keys = self.flat_keys
+            #self.selected_flat_indices = range(0, len(self.flat_keys) - 1)
 
         return self
 

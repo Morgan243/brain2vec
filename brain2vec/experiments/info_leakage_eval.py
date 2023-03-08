@@ -245,6 +245,28 @@ class DatasetWithModel:
 
         return split_0_dset_with_model, split_1_dset_with_model
 
+    def split_on_time(self, split_time: float):
+        assert self.dataset is not None
+        split_0, split_1 = self.dataset.split_select_at_time(split_time=split_time)
+
+        split_0_dset_with_model = DatasetWithModel(p_tuples=self.p_tuples,
+                                                   reindex_map=self.reindex_map,
+                                                   dataset_cls=self.dataset_cls,
+                                                   member_model=self.member_model,
+                                                   mc_member_model=self.mc_member_model,
+                                                   target_shape=self.target_shape,
+                                                   dataset=split_0)
+
+        split_1_dset_with_model = DatasetWithModel(p_tuples=self.p_tuples,
+                                                   reindex_map=self.reindex_map,
+                                                   dataset_cls=self.dataset_cls,
+                                                   member_model=self.member_model,
+                                                   mc_member_model=self.mc_member_model,
+                                                   target_shape=self.target_shape,
+                                                   dataset=split_1)
+
+        return split_0_dset_with_model, split_1_dset_with_model
+
     def as_feature_extracting_datapipe(self, batch_size, device,
                                        multi_channel: bool = True,
                                        batches_per_epoch: Optional[int] = None,
@@ -313,6 +335,8 @@ class DatasetWithModel:
 
 
 class DatasetWithModelBaseTask(bxp.TaskOptions):
+    dataset: datasets.DatasetOptions
+
     @classmethod
     def load_and_check_pretrain_opts(cls, results, expected_dataset_name, dataset_cls, expected_n_pretrain_sets=2) -> List[Tuple]:
         sm_member_dataset_opts = results['dataset_options']
@@ -388,7 +412,7 @@ class ReidentificationTask(DatasetWithModelBaseTask):
                                                                       flatten_sensors_to_samples=True,
                                                                       label_reindex_col='patient',
                                                                       split_cv_from_test=False,
-                                                                      pipeline_params=dict(),
+                                                                      pipeline_params='{}',
                                                                       pre_processing_pipeline='random_sample')
 
     pretrained_model_input: bxp.ResultInputOptions = None
@@ -410,16 +434,25 @@ class ReidentificationTask(DatasetWithModelBaseTask):
     def make_dataset_and_loaders(self, **kws):
         dataset_cls = datasets.BaseDataset.get_dataset_by_name(self.dataset.dataset_name)
 
+        # Load the pretrained model and it's options JSON data
         self.pretrained_model, self.pretrained_model_opts = self.load_pretrained_model_results(
             self.pretrained_model_input.result_file,  self.pretrained_model_input.model_base_path)
 
+        # Check that the loaded model was pretrained on the dataset that was specified
         pretrained_dset_options = self.pretrained_model_opts['dataset_options']
         assert pretrained_dset_options['dataset_name'] == self.dataset.dataset_name
-        pretrain_sets = dataset_cls.make_tuples_from_sets_str(pretrained_dset_options['train_sets'])
+        # Get a list of set patient tuples used for pretraining
+        pretrain_sets: List[Tuple] = dataset_cls.make_tuples_from_sets_str(pretrained_dset_options['train_sets'])
 
+        # Pipeline parameters are supposed to be a dict for passing to pipeline.set_params()
+        # - At this point, the pipeline parameters may be None or a string passed from the CLI
         if isinstance(self.dataset.pipeline_params, str):
             self.dataset.pipeline_params = eval(self.dataset.pipeline_params)
+        # Make sure it's an empty dictionary so later calls to `update()` the dict will work
+        elif self.dataset.pipeline_params is None:
+            self.dataset.pipeline_params = dict()
 
+        # Object to wrap the dataset and the model for caching the pretrained models extracted features
         train_dataset_with_model = DatasetWithModel(
             p_tuples=pretrain_sets,
             reindex_map=None,
@@ -427,15 +460,18 @@ class ReidentificationTask(DatasetWithModelBaseTask):
             member_model=self.pretrained_model,
             target_shape=len(pretrain_sets)
         )
-        #self.dataset.pipeline_params = {"rnd_stim__slice_selection": self.train_sample_slice}
+
+        # Update the current pipeline_params with train slice - which should be an early section of the data
         self.dataset.pipeline_params.update({"rnd_stim__slice_selection": self.train_sample_slice})
+        # Load up the data - this modifies the obect in place
         self.load_one_dataset_with_model(train_dataset_with_model)
 
+        # The train set determines the selected columns
         selected_columns = train_dataset_with_model.dataset.selected_columns
 
         train_dataset_with_model, cv_dataset_with_model = train_dataset_with_model.split_on_key_level(
-            keys=('patient', 'sent_code'),
-            test_size=0.25)
+            keys=('patient', 'sent_code'), test_size=0.30)
+        #train_dataset_with_model, cv_dataset_with_model = train_dataset_with_model.split_on_time(0.5)
 
         test_dataset_with_model = DatasetWithModel(
             p_tuples=pretrain_sets,
