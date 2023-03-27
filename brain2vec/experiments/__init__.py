@@ -82,6 +82,22 @@ def load_model_from_results(results, base_model_path=None, **kws_update):
     #model.to(options.device)
 
 
+def upack_result_options_to_columns(results_df: pd.DataFrame,
+                                    options_cols_like='_options'):
+    opt_df_map = {opt_col: results_df[opt_col].apply(pd.Series) for opt_col in
+                  results_df.filter(like=options_cols_like).columns}
+
+    options_df = opt_df_map['model_options'].copy()
+    for opt_name, _df in opt_df_map.items():
+        keep_cols = list(set(_df.columns.tolist()) - set(options_df.columns.tolist()))
+        options_df = options_df.join(_df[keep_cols].copy())
+
+    keep_cols = list(set(options_df.columns.tolist()) - set(results_df.columns.tolist()))
+    #opt_cols = options_df.drop(['model_name', 'save_model_path'], axis=1).columns.tolist()
+
+    result_options_df = results_df.join(options_df[keep_cols])
+    return result_options_df
+
 @dataclass
 class ResultParsingOptions(JsonSerializable):
     result_file: str = None

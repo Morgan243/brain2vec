@@ -17,7 +17,9 @@ from sklearn.pipeline import Pipeline
 from brain2vec.datasets import BaseDataset, DatasetOptions
 from brain2vec.datasets.base_aspen import BaseASPEN
 
+
 with_logger = utils.with_logger(prefix_name=__name__)
+
 
 path_map = dict()
 pkg_data_dir = os.path.join(os.path.split(os.path.abspath(__file__))[0], '../data')
@@ -75,7 +77,7 @@ class HarvardSentences(BaseASPEN):
                                                               # TODO: Check the default rate here - 1024?
                                                               1200, reshape=-1, output_key='stim')),
             ('parse_sensor_ras', ps.ParseSensorRAS()),
-            ('extract_mfc', ps.ExtractMFCC())
+            #('extract_mfc', ps.ExtractMFCC())
         ]
 
         parse_input_steps = [
@@ -332,7 +334,7 @@ class HarvardSentences(BaseASPEN):
         cls.logger.info("Harvard sentences only uses location and patient identifiers")
         loc_map = cls.all_patient_maps.get(location)
         if loc_map is None:
-            raise KeyError(f"Valid locations: {list(cls.all_patient_maps.keys())}")
+            raise KeyError(f"Got location {location}, but valid locations are: {list(cls.all_patient_maps.keys())}")
 
         fname = f"{location}{patient:02d}_Task_1.mat"
 

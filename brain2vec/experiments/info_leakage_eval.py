@@ -117,9 +117,11 @@ class MultiChannelAttacker(torch.nn.Module):
 
         #self.S = self.input_shape[0]
         #self.T = self.input_shape[1]
-        self.S, self.T, self.C = self.input_shape
+        #self.S, self.T, self.C = self.input_shape
         #self.T, self.C = self.c2v_m.T, self.c2v_m.C
-        self.h_dim = self.S * self.C
+        #self.h_dim = self.S * self.C
+        self.n_channels, self.n_times, self.n_embed = self.input_shape
+        self.h_dim = self.n_channels * self.n_times * self.n_embed
 
 
         #B, T, S, C = output_arr.shape
@@ -158,7 +160,7 @@ class MultiChannelAttacker(torch.nn.Module):
             if self.outputs == 1:
                 self.classifier_head = torch.nn.Sequential(torch.nn.Sigmoid())
 
-            self.feat_arr_reshape = (-1, self.h_dim * self.T)
+            self.feat_arr_reshape = (-1, self.h_dim)
             #self.classifier_head = torch.nn.Sequential(torch.nn.Sigmoid() if self.outputs == 1
             #                                           else torch.nn.Identity())
         elif hidden_encoder == 'transformer':
@@ -172,7 +174,7 @@ class MultiChannelAttacker(torch.nn.Module):
 
             # h_size = 32
             self.classifier_head = torch.nn.Sequential(*[
-                # base.Reshape((self.C * self.T,)),
+                # base.py.Reshape((self.C * self.T,)),
                 # torch.nn.Linear(self.lin_dim, h_size),
                 # torch.nn.BatchNorm1d(h_size),
                 # torch.nn.LeakyReLU(),
@@ -210,14 +212,26 @@ class DatasetWithModel:
 
     member_model: torch.nn.Module
     mc_member_model: Optional[torch.nn.Module] = None
+    mc_n_channels_to_sample: Optional[int] = None
 
     dataset: Optional[HarvardSentences] = None
 
     target_shape: int = 2
 
     def create_mc_model(self):
+        if self.mc_n_channels_to_sample is None:
+            assert self.dataset.selected_columns is not None, \
+                "mc_n_channels_to_sample must be set if dataset doesn't have fixed number of sensors"
+            n_channels = len(self.dataset.selected_columns)
+        else:
+            assert isinstance(self.mc_n_channels_to_sample, int), \
+                f"mc_n_channels_to_sample must be int, got {type(self.mc_n_channels_to_sample)}"
+            assert self.mc_n_channels_to_sample > 0, \
+                f"Can only sample positive integers, mc_n_channels_to_sample = {self.mc_n_channels_to_sample}"
+            n_channels = self.mc_n_channels_to_sample
+
         self.mc_member_model = bft.MultiChannelFromSingleChannel(input_shape=(
-            len(self.dataset.selected_columns), 256, self.member_model.C
+            n_channels, 256, self.member_model.C
         ), model_1d=self.member_model)
         return self
 
@@ -271,10 +285,26 @@ class DatasetWithModel:
                                        multi_channel: bool = True,
                                        batches_per_epoch: Optional[int] = None,
                                        one_hot_encode_target: bool = True):
-        self.mc_member_model = self.mc_member_model.to(device)
+        if self.mc_member_model is not None:
+            self.mc_member_model = self.mc_member_model.to(device)
         self.feature_model = self.member_model.to(device) if not multi_channel else self.mc_member_model.to(device)
 
-        model_out_dataset = SequenceWrapper(self.dataset).batch(batch_size).map(default_collate)
+        model_out_dataset = SequenceWrapper(self.dataset)
+        if isinstance(self.mc_n_channels_to_sample, int):
+            # TODO: Sample the channels after going through the model, that way can cache before sampling
+            #       and still save significant time and memory
+            def sample_mc_channels(_d):
+                x = _d['signal_arr']
+                sample_ixes = torch.randint(low=0, high=x.shape[0],
+                                            size=(self.mc_n_channels_to_sample,))
+                updates = {k: arr[sample_ixes] for k, arr in _d.items() if torch.is_tensor(arr) and arr.ndim > 1}
+                output = dict(**_d)
+                output.update(updates)
+                return output
+
+            model_out_dataset = model_out_dataset.map(sample_mc_channels)
+
+        model_out_dataset = model_out_dataset.batch(batch_size).map(default_collate)
 
         if multi_channel:
             def run_mc_model(_d):
@@ -300,6 +330,7 @@ class DatasetWithModel:
             model_out_dataset = model_out_dataset.map(run_sc_model)
 
         def _one_hot_target(_d):
+            _d['target_cls_ix'] = _d['target_arr']
             _d['target_arr'] = F.one_hot(_d['target_arr'], num_classes=self.target_shape)#num_classes)
             return _d
 
@@ -382,7 +413,12 @@ class DatasetWithModelBaseTask(bxp.TaskOptions):
 
         return pretrained_model, result_json
 
-    def load_one_dataset_with_model(self, dset_w_model: DatasetWithModel, sensor_columns='valid'):
+    def load_one_dataset_with_model(self, dset_w_model: DatasetWithModel,
+                                    sensor_columns: Optional[str] = None,
+                                    is_multichannel: bool = False):
+        if sensor_columns is None:
+            sensor_columns = 'good_for_participant' if self.dataset.flatten_sensors_to_samples else 'valid'
+
         if isinstance(self.dataset.pipeline_params, str):
             self.dataset.pipeline_params = eval(self.dataset.pipeline_params)
 
@@ -400,7 +436,8 @@ class DatasetWithModelBaseTask(bxp.TaskOptions):
             **base_kws
         )
         dset_w_model.dataset = dset_w_model.dataset_cls(**kws)
-        dset_w_model.create_mc_model()
+        if is_multichannel:
+            dset_w_model.create_mc_model()
         return dset_w_model
 
 
@@ -424,7 +461,10 @@ class ReidentificationTask(DatasetWithModelBaseTask):
     squeeze_target: ClassVar[bool] = True
 
     def make_criteria_and_target_key(self):
-        criterion = torch.nn.CrossEntropyLoss()
+        cls_rates = self.dataset_with_model_d['train'].dataset.get_target_rates()
+        self.logger.info(f"WEIGHTS: {cls_rates}")
+        weight = torch.Tensor(cls_rates).to(self.device)
+        criterion = torch.nn.CrossEntropyLoss(weight=weight)
         target_key = 'target_arr'
         return criterion, target_key
 
@@ -443,6 +483,8 @@ class ReidentificationTask(DatasetWithModelBaseTask):
         assert pretrained_dset_options['dataset_name'] == self.dataset.dataset_name
         # Get a list of set patient tuples used for pretraining
         pretrain_sets: List[Tuple] = dataset_cls.make_tuples_from_sets_str(pretrained_dset_options['train_sets'])
+
+        is_mc = not self.dataset.flatten_sensors_to_samples
 
         # Pipeline parameters are supposed to be a dict for passing to pipeline.set_params()
         # - At this point, the pipeline parameters may be None or a string passed from the CLI
@@ -464,7 +506,7 @@ class ReidentificationTask(DatasetWithModelBaseTask):
         # Update the current pipeline_params with train slice - which should be an early section of the data
         self.dataset.pipeline_params.update({"rnd_stim__slice_selection": self.train_sample_slice})
         # Load up the data - this modifies the obect in place
-        self.load_one_dataset_with_model(train_dataset_with_model)
+        self.load_one_dataset_with_model(train_dataset_with_model, is_multichannel=is_mc)
 
         # The train set determines the selected columns
         selected_columns = train_dataset_with_model.dataset.selected_columns
@@ -482,12 +524,13 @@ class ReidentificationTask(DatasetWithModelBaseTask):
         )
         #self.dataset.pipeline_params = {"rnd_stim__slice_selection": self.test_sample_slice}
         self.dataset.pipeline_params.update({"rnd_stim__slice_selection": self.test_sample_slice})
-        self.load_one_dataset_with_model(test_dataset_with_model, sensor_columns=selected_columns)
+        self.load_one_dataset_with_model(test_dataset_with_model, sensor_columns=selected_columns,
+                                         is_multichannel=is_mc)
 
         # -----
         train_pipe = train_dataset_with_model.as_feature_extracting_datapipe(
             self.dataset.batch_size, batches_per_epoch=self.dataset.batches_per_epoch,
-            device=self.device, multi_channel=False
+            device=self.device, multi_channel=is_mc
         )
 
         test_batch_size = self.dataset.batch_size if self.dataset.batch_size_eval is None else self.dataset.batch_size_eval
@@ -495,12 +538,12 @@ class ReidentificationTask(DatasetWithModelBaseTask):
 
         cv_pipe = cv_dataset_with_model.as_feature_extracting_datapipe(
             test_batch_size, batches_per_epoch=test_batches_per_epoch,
-            device=self.device, multi_channel=False
+            device=self.device, multi_channel=is_mc
         )
 
         test_pipe = test_dataset_with_model.as_feature_extracting_datapipe(
             test_batch_size, batches_per_epoch=test_batches_per_epoch,
-            device=self.device, multi_channel=False
+            device=self.device, multi_channel=is_mc
         )
 
         self.dataset_with_model_d = dict(train=train_dataset_with_model,
@@ -596,7 +639,7 @@ class OneModelMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
         test_label_reindex_map.update({t[1]: 1 for t in debias_test_pos_set})
         logger.info(f"Test label reindex map created: {test_label_reindex_map}")
 
-        sensor_columns = kws.pop('sensor_columns', 'valid')
+        sensor_columns = kws.pop('sensor_columns', default=None)
         train_dataset_with_model = DatasetWithModel(
             p_tuples=debias_train_neg_set + debias_train_pos_set,
             reindex_map=train_label_reindex_map,
@@ -605,7 +648,10 @@ class OneModelMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
         )
         train_dataset_with_model = self.load_one_dataset_with_model(train_dataset_with_model,
                                                                     sensor_columns=sensor_columns)
-        selected_sensor_columns = train_dataset_with_model.dataset.selected_columns
+        if sensor_columns is None or sensor_columns == 'good_for_participant':
+            selected_sensor_columns = sensor_columns
+        else:
+            selected_sensor_columns = train_dataset_with_model.dataset.selected_columns
 
         train_dataset_with_model, cv_dataset_with_model = train_dataset_with_model.split_on_key_level(
             keys=('patient', 'sent_code'),
@@ -672,6 +718,7 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
                                                                       split_cv_from_test=False,
                                                                       pre_processing_pipeline='random_sample')
     method: str = '1d_linear'
+    n_channels_to_sample: Optional[int] = None
     weight_decay: float = 0.
 
     squeeze_target: ClassVar[bool] = True
@@ -803,13 +850,19 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
                 tgt_input.result_file, tgt_input.model_base_path, device=self.device
             )
 
+    def get_num_channels(self):
+        if self.n_channels_to_sample is not None:
+            return self.n_channels_to_sample
+        else:
+            return len(self.dataset_with_model_d['train'].selected_columns)
+
     def get_member_model_output_shape(self) -> Tuple:
         member_model = self.shadow_model_map[0]
         return member_model.T, member_model.C
 
     def make_dataset_and_loaders(self, **kws):
         self.load_models()
-        sensor_columns = kws.get('sensor_columns', 'valid')
+        sensor_columns = kws.get('sensor_columns', None)
 
         # We'll use the CLI options to set the expected dataset - later assert that all models used same dataset
         dataset_cls = datasets.BaseDataset.get_dataset_by_name(self.dataset.dataset_name)
@@ -839,7 +892,8 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
                 # Pretraining participants from this model are the positive class (member)
                 reindex_map={s[1]: 1 if s in sm_pretrain_sets_d[sm_k] else 0 for s in unique_shadow_sets},
                 dataset_cls=dataset_cls,
-                member_model=sm_pretrained_model
+                member_model=sm_pretrained_model,
+                mc_n_channels_to_sample=self.n_channels_to_sample,
             )
 
         # Load the first o
@@ -847,17 +901,20 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
         #shadow_training_sets_with_model[first_sm_k] = self.load_one_dataset_with_model(first_sm,
         #                                                                               sensor_columns=sensor_columns)
         #selected_columns = first_sm.dataset.selected_columns
-        selected_columns = None
+        is_multichannel = True if '2d' in self.method else False
+        selected_columns = 'good_for_participant' if sensor_columns is None else sensor_columns
         for k, st_with_model in shadow_training_sets_with_model.items():
             if selected_columns is None:
-                self.load_one_dataset_with_model(st_with_model, sensor_columns=sensor_columns)
+                self.load_one_dataset_with_model(st_with_model, sensor_columns=sensor_columns,
+                                                 is_multichannel=is_multichannel)
                 selected_columns = st_with_model.dataset.selected_columns
             else:
-                self.load_one_dataset_with_model(st_with_model, sensor_columns=selected_columns)
+                self.load_one_dataset_with_model(st_with_model, sensor_columns=selected_columns,
+                                                 is_multichannel=is_multichannel)
 
         train_pipes = [s.as_feature_extracting_datapipe(
             self.dataset.batch_size, batches_per_epoch=self.dataset.batches_per_epoch,
-            device=self.device, multi_channel='2d' in self.method)
+            device=self.device, multi_channel=is_multichannel)
                        for k, s in shadow_training_sets_with_model.items()]
 
         training_datapipe = Concater(*train_pipes).shuffle()
@@ -878,20 +935,22 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
                 # Pretraining participants from this model are the positive class (member)
                 reindex_map={s[1]: 1 if s in sm_pretrain_sets_d[sm_k] else 0 for s in unique_shadow_sets},
                 dataset_cls=dataset_cls,
-                member_model=sm_pretrained_model
+                member_model=sm_pretrained_model,
+                mc_n_channels_to_sample=self.n_channels_to_sample,
             )
             shadow_cv_sets_with_model[sm_k] = self.load_one_dataset_with_model(shadow_cv_sets_with_model[sm_k],
-                                                                               selected_columns)
+                                                                               selected_columns,
+                                                                               is_multichannel=is_multichannel)
         #shadow_cv_sets_with_model = {k: self.load_one_dataset_with_model(st_with_model, selected_columns)
         #                             for k, st_with_model in shadow_cv_sets_with_model.items()}
 
         cv_datapipe = Concater(*[s.as_feature_extracting_datapipe(
             self.dataset.batch_size, batches_per_epoch=self.dataset.batches_per_epoch,
-            device=self.device, multi_channel='2d' in self.method)
+            device=self.device, multi_channel=is_multichannel)
             for k, s in shadow_cv_sets_with_model.items()]
                                ).shuffle()
-        #cv_datapipe = next(iter(shadow_cv_sets_with_model.values())).patch_attributes(cv_datapipe)
-        cv_datapipe = shadow_cv_sets_with_model[sm_k].patch_attributes(cv_datapipe)
+        cv_datapipe = next(iter(shadow_cv_sets_with_model.values())).patch_attributes(cv_datapipe)
+        #cv_datapipe = shadow_cv_sets_with_model[sm_k].patch_attributes(cv_datapipe)
         # --- End CV data pipe setup ---
 
         # -------------
@@ -905,18 +964,23 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
                 p_tuples=unique_target_sets,
                 reindex_map={s[1]: 1 if s in target_pretrain_sets else 0 for s in unique_target_sets},
                 dataset_cls=dataset_cls,
-                member_model=t_pretrained_model
+                member_model=t_pretrained_model,
+                mc_n_channels_to_sample=self.n_channels_to_sample,
             )
 
-            test_sets_with_model[t_k] = self.load_one_dataset_with_model(test_sets_with_model[t_k], selected_columns)
+            test_sets_with_model[t_k] = self.load_one_dataset_with_model(test_sets_with_model[t_k], selected_columns,
+                                                                         is_multichannel=is_multichannel)
 
-        test_batch_size = self.dataset.batch_size if self.dataset.batch_size_eval is None else self.dataset.batch_size_eval
-        test_batches_per_epoch = self.dataset.batches_per_epoch if self.dataset.batches_per_eval_epoch is None else self.dataset.batches_per_eval_epoch
+        test_batch_size = (self.dataset.batch_size if self.dataset.batch_size_eval is None
+                           else self.dataset.batch_size_eval)
+        test_batches_per_epoch = (self.dataset.batches_per_epoch if self.dataset.batches_per_eval_epoch is None
+                                  else self.dataset.batches_per_eval_epoch)
         test_datapipe = Concater(*[s.as_feature_extracting_datapipe(
             batch_size=test_batch_size, batches_per_epoch=test_batches_per_epoch,
-            device=self.device, multi_channel='2d' in self.method)
+            device=self.device, multi_channel=is_multichannel)
             for k, s in test_sets_with_model.items()]).shuffle()
-        test_datapipe = test_sets_with_model[t_k].patch_attributes(test_datapipe)
+
+        test_datapipe = next(iter(test_sets_with_model.values())).patch_attributes(test_datapipe)
         # --- End Test data pipe setup ---
 
         self.dataset_with_model_d = dict(train=shadow_training_sets_with_model,
@@ -966,18 +1030,23 @@ class InfoLeakageExperiment(bxp.Experiment):
         # --
         # Load Datasets
         self.dataset_map, self.dl_map, self.eval_dl_map = self.task.make_dataset_and_loaders(
-            sensor_columns=list(range(64))
+            #sensor_columns=list(range(64))
         )
 
-        n_sensors = len(self.dataset_map['train'].selected_columns)
         self.target_label_map, self.target_labels = self.dataset_map['train'].get_target_labels()
         num_classes = len(self.target_labels)
         logger.info(f"Labels for {num_classes} classes: {self.target_labels}")
 
         T, C = self.task.get_member_model_output_shape()
         if '2d' in self.attacker_model.fine_tuning_method:
-            attack_arr_shape = T, n_sensors, C
-            self.model_kws = dict(input_shape=attack_arr_shape)
+            if hasattr(self.task, 'get_num_channels'):
+                n_sensors = self.task.get_num_channels()
+            else:
+                n_sensors = len(self.dataset_map['train'].selected_columns)
+
+            #attack_arr_shape = T, n_sensors, C
+            attack_arr_shape = n_sensors, T, C
+            self.model_kws = dict(input_shape=attack_arr_shape, outputs=num_classes)
             self.result_model = MultiChannelAttacker(**self.model_kws)
         else:
             attack_arr_shape = T * C

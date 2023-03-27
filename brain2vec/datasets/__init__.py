@@ -75,7 +75,7 @@ class ShuffleDimension:
 
 
 class SelectFromDim:
-    """Expects numpy arrays - use in Compose - models.base.Select can be used in Torch """
+    """Expects numpy arrays - use in Compose - models.base.py.Select can be used in Torch """
 
     def __init__(self, dim=0, index='random', keep_dim=True):
         super(SelectFromDim, self).__init__()
@@ -169,7 +169,7 @@ class BaseDataset(tdata.Dataset):
 
 
 @dataclass
-class DatasetOptions(JsonSerializable):
+class DatasetOptions(JsonSerializable, utils.SetParamsMixIn):
     dataset_name: str = None
 
     batch_size: int = 256
@@ -200,8 +200,8 @@ class DatasetOptions(JsonSerializable):
     pin_memory: bool = False
     dl_prefetch_factor: Optional[int] = None
 
-    n_dl_workers: int = 4
-    n_dl_eval_workers: int = 6
+    n_dl_workers: int = 0
+    n_dl_eval_workers: int = 0
 
     def make_eval_dl_kws(self):
         #self.dataset_map, self.dl_map, self.eval_dl_map
@@ -298,7 +298,7 @@ class DatasetOptions(JsonSerializable):
                         flatten_sensors_to_samples=self.flatten_sensors_to_samples)
 
         base_kws.update(base_data_kws)
-        logger.info(f"Dataset base keyword arguments: {base_kws}")
+        logger.info(f"Dataset base.py keyword arguments: {base_kws}")
         train_kws = dict(patient_tuples=train_p_tuples, **base_kws)
         cv_kws = dict(patient_tuples=cv_p_tuples, **base_kws)
         test_kws = dict(patient_tuples=test_p_tuples, **base_kws)

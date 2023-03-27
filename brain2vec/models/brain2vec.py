@@ -208,7 +208,7 @@ class Brain2Vec(torch.nn.Module):
 #                #torch.nn.Dropout(p=dropout),
 #                torch.nn.GELU(),
 #            )
-#            self.feature_model.apply(base.weights_init)
+#            self.feature_model.apply(base.py.weights_init)
 
 
         # Run test data through to get sizes automatically
@@ -685,7 +685,7 @@ class MultiChannelBrain2Vec(torch.nn.Module):
 
             # h_size = 32
             self.classifier_head = torch.nn.Sequential(*[
-                # base.Reshape((self.C * self.T,)),
+                # base.py.Reshape((self.C * self.T,)),
                 # torch.nn.Linear(self.lin_dim, h_size),
                 # torch.nn.BatchNorm1d(h_size),
                 # torch.nn.LeakyReLU(),

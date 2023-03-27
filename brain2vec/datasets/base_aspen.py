@@ -101,8 +101,7 @@ class BaseASPEN(BaseDataset):
         if self.initialize_data:
             self.initialize()
 
-    def initialize(self):
-
+    def _init_pipeline(self):
         # If nothing passed, use 'default' pipeline
         if self.pre_processing_pipeline is None:
             self.logger.info("Default pipeline selected")
@@ -128,205 +127,226 @@ class BaseASPEN(BaseDataset):
             logger.warning(f"Pipeline params were provided, but have a pipeline that is not... an SkLearn Pipeline!")
             logger.warning("So pipeline params are unused!")
 
+    @classmethod
+    def from_others_data_map(cls, other,
+                             label_reindex_col=None,
+                             label_reindex_ix=None,
+                             label_reindex_map=None):
+        o = cls(data_from=other)
+        if label_reindex_col is not None:
+            o.label_reindex_col = label_reindex_col
+
+        if label_reindex_ix is not None:
+            o.label_reindex_ix = label_reindex_ix
+
+        if label_reindex_map is not None:
+            o.label_reindex_map = label_reindex_map
+
+    def with_data_from(self, other: 'BaseASPEN'):
+        # print("Warning: using naive shared-referencing across objects - only use when feeling lazy")
+        self.logger.warning("Warning: using naive shared-referencing across objects - only use when feeling lazy")
+        # self.mfcc_m = self.data_from.mfcc_m
+        self.data_maps = other.data_maps
+        self.n_samples_per_window = other.n_samples_per_window
+        self.sample_index_maps = other.sample_index_maps
+        # self.flat_index_map = self.data_from.flat_index_map
+        self.flat_ix_map = other.flat_ix_map
+        self.flat_keys = other.flat_keys
+        self.key_cols = other.key_cols
+        self.k_select_offset = other.k_select_offset
+        # self.logger.info("Copying over sample ix dataframe")
+        self.sample_ix_df = other.sample_ix_df.copy()
+        self.ixed_sample_ix_df = other.ixed_sample_ix_df.copy()
+        self.selected_columns = other.selected_columns
+        self.flatten_sensors_to_samples = other.flatten_sensors_to_samples
+        self.extra_output_keys = other.extra_output_keys
+        self.fs_signal = other.fs_signal
+        self.label_reindex_col = other.label_reindex_col
+        self.label_reindex_ix = other.label_reindex_ix
+        self.label_reindex_map = other.label_reindex_map
+
+    def load_and_pre_process(self):
         # If no data sharing, then load and parse data from scratch
-        if self.data_from is None:
-            self.logger.info("Loading data directly")
-            # Leave this here for now...
-            # self.mfcc_m = torchaudio.transforms.MFCC(self.default_audio_sample_rate,
-            #                                         self.num_mfcc)
+        self.logger.info("Loading data directly")
 
-            # - Data Loading -
-            # - Load the data in its raw form from files - default is matlab files, override to change
-            data_iter = tqdm(self.patient_tuples, desc="Loading data")
-            mat_data_maps = {l_p_s_t_tuple: self.load_data(*l_p_s_t_tuple,
-                                                           # sensor_columns=self.sensor_columns,
-                                                           subset=self.data_subset)
-                             for l_p_s_t_tuple in data_iter}
+        # - Data Loading -
+        # - Load the data in its raw form from files - default is matlab files, override to change
+        data_iter = tqdm(self.patient_tuples, desc="Loading data")
+        mat_data_maps = {l_p_s_t_tuple: self.load_data(*l_p_s_t_tuple,
+                                                       subset=self.data_subset)
+                         for l_p_s_t_tuple in data_iter}
 
-            # - Important processing - #
-            # - Process each subject in data map through pipeline func
-            # Init mapping from <patient tuple> -> pipeline output
-            self.data_maps = dict()
-            # Init mapping from <patient tuple> -> to pipelines 'sample_index_map' output (target->TimedeltaIndex)
-            self.sample_index_maps = dict()
-            for k, dmap in mat_data_maps.items():
-                # Run the pipeline, mutating/modifying the data map for this patient trial
-                res_dmap = self.pipeline_f(dmap)
-                self.sample_index_maps[k] = res_dmap['sample_index_map']
-                # The first data map sets the sampling frequency fs if it's not already set
-                self.fs_signal = res_dmap[self.mat_d_keys['signal_fs']] if self.fs_signal is None else self.fs_signal
-                # The first data map sets the N-samples per window if it's not already set
-                self.n_samples_per_window = getattr(self, 'n_samples_per_window', res_dmap['n_samples_per_window'])
-                self.logger.info(f"N samples per window: {self.n_samples_per_window}")
+        # - Important processing - #
+        # - Process each subject in data map through pipeline func
+        # Init mapping from <patient tuple> -> pipeline output
+        self.data_maps = dict()
+        # Init mapping from <patient tuple> -> to pipelines 'sample_index_map' output (target->TimedeltaIndex)
+        self.sample_index_maps = dict()
+        for k, dmap in mat_data_maps.items():
+            # Run the pipeline, mutating/modifying the data map for this patient trial
+            res_dmap = self.pipeline_f(dmap)
+            self.sample_index_maps[k] = res_dmap['sample_index_map']
+            # The first data map sets the sampling frequency fs if it's not already set
+            self.fs_signal = res_dmap[self.mat_d_keys['signal_fs']] if self.fs_signal is None else self.fs_signal
+            # The first data map sets the N-samples per window if it's not already set
+            self.n_samples_per_window = getattr(self, 'n_samples_per_window', res_dmap['n_samples_per_window'])
+            self.logger.info(f"N samples per window: {self.n_samples_per_window}")
 
-                # Check that signal frequencies always agree
-                if self.fs_signal != res_dmap[self.mat_d_keys['signal_fs']]:
-                    raise ValueError("Mismatch fs (%s!=%s) on %s" % (self.fs_signal, res_dmap['fs_signal'], str(k)))
+            # Check that signal frequencies always agree
+            if self.fs_signal != res_dmap[self.mat_d_keys['signal_fs']]:
+                raise ValueError("Mismatch fs (%s!=%s) on %s" % (self.fs_signal, res_dmap['fs_signal'], str(k)))
 
-                self.data_maps[k] = res_dmap
+            self.data_maps[k] = res_dmap
 
-            # ----
-            # SENSOR SELECTION LOGIC - based on the patients loaded - which sensors do we use?
-            #if isinstance(self.sensor_columns, str) and self.sensor_columns == 'good_for_participant':
-            #    self.logger.info("Will only use each participants good sensors")
-            #    self.selected_columns = None
-            if self.sensor_columns is None or isinstance(self.sensor_columns, str):
-                # Get each participant's good and bad sensor columns into a dictionary
-                good_and_bad_tuple_d = {l_p_s_t_tuple: (mat_d['good_sensor_columns'], mat_d['bad_sensor_columns'])
-                                        for l_p_s_t_tuple, mat_d in self.data_maps.items()}
+        # ----
+        # SENSOR SELECTION LOGIC - based on the patients loaded - which sensors do we use?
+        #if isinstance(self.sensor_columns, str) and self.sensor_columns == 'good_for_participant':
+        #    self.logger.info("Will only use each participants good sensors")
+        #    self.selected_columns = None
+        if self.sensor_columns is None or isinstance(self.sensor_columns, str):
+            # Get each participant's good and bad sensor columns into a dictionary
+            good_and_bad_tuple_d = {l_p_s_t_tuple: (mat_d['good_sensor_columns'], mat_d['bad_sensor_columns'])
+                                    for l_p_s_t_tuple, mat_d in self.data_maps.items()}
 
-                # Go back through and any missing sets of good_sensors are replaced with all sensor from the data
-                good_and_bad_tuple_d = {
-                        # Take good sensors (gs) if they were explicitly identified by the pipeline
-                    k: (set(gs) if gs is not None
-                        # Otherwise, assume all sensors are good
-                        else (list(range(self.data_maps[k][self.mat_d_keys['signal']].shape[1]))),
-                        # Second element of the tuple will still be the bad sensors (bs), which may be None
-                        bs)
-                    for k, (gs, bs) in good_and_bad_tuple_d.items()}
+            # Go back through and any missing sets of good_sensors are replaced with all sensor from the data
+            good_and_bad_tuple_d = {
+                # Take good sensors (gs) if they were explicitly identified by the pipeline
+                k: (set(gs) if gs is not None
+                    # Otherwise, assume all sensors are good
+                    else (list(range(self.data_maps[k][self.mat_d_keys['signal']].shape[1]))),
+                    # Second element of the tuple will still be the bad sensors (bs), which may be None
+                    bs)
+                for k, (gs, bs) in good_and_bad_tuple_d.items()}
 
-                self.logger.info("GOOD AND BAD SENSORS: " + str(good_and_bad_tuple_d))
-                # Default to 'union' options if sensor columns not explicitly provided
-                self.sensor_columns = 'union' if self.sensor_columns is None else self.sensor_columns
+            self.logger.info("GOOD AND BAD SENSORS: " + str(good_and_bad_tuple_d))
+            # Default to 'union' options if sensor columns not explicitly provided
+            self.sensor_columns = 'union' if self.sensor_columns is None else self.sensor_columns
 
-                # GOOD FOR PT: Use all good sensor - only makes sense when flattening sensors to samples
-                if self.sensor_columns == 'good_for_participant':
-                    assert self.flatten_sensors_to_samples
-                    self.selected_columns = None
-                    #self.pt_selected_columns =
-                # UNION: Select all good sensors from all inputs, zeros will be filled for those missing
-                elif self.sensor_columns == 'union':
-                    # Create a sorted list of all sensor IDs found in the good sensor sets extracted
-                    # Only allow good sensors that are not in the bad sensor list
-                    self.selected_columns = sorted(list({_gs for k, (gs, bs) in good_and_bad_tuple_d.items()
-                                                         for _gs in gs if bs is None or _gs not in bs}))
-                # INTERSECTION: Select only sensors that are rated good in all inputs
-                elif self.sensor_columns == 'intersection' or self.sensor_columns == 'valid':
-                    s = [set(gs) for k, (gs, bs) in good_and_bad_tuple_d.items()]
-                    self.selected_columns = sorted(list(s[0].intersection(*s[1:])))
-                else:
-                    raise ValueError("Unknown sensor columns argument: " + str(self.sensor_columns))
-
-                if self.selected_columns is not None:
-                    self.logger.info(f"Selected {len(self.selected_columns)} columns using {self.sensor_columns} method: "
-                                     f"{', '.join(map(str, self.selected_columns))}")
-
-            elif isinstance(self.sensor_columns, list):
-                self.selected_columns = self.sensor_columns
+            # GOOD FOR PT: Use all good sensor - only makes sense when flattening sensors to samples
+            if self.sensor_columns == 'good_for_participant':
+                #assert self.flatten_sensors_to_samples
+                self.selected_columns = None
+                #self.pt_selected_columns =
+            # UNION: Select all good sensors from all inputs, zeros will be filled for those missing
+            elif self.sensor_columns == 'union':
+                # Create a sorted list of all sensor IDs found in the good sensor sets extracted
+                # Only allow good sensors that are not in the bad sensor list
+                self.selected_columns = sorted(list({_gs for k, (gs, bs) in good_and_bad_tuple_d.items()
+                                                     for _gs in gs if bs is None or _gs not in bs}))
+            # INTERSECTION: Select only sensors that are rated good in all inputs
+            elif self.sensor_columns == 'intersection' or self.sensor_columns == 'valid':
+                s = [set(gs) for k, (gs, bs) in good_and_bad_tuple_d.items()]
+                self.selected_columns = sorted(list(s[0].intersection(*s[1:])))
             else:
-                raise ValueError(f"Can't use sensor_columns of {type(self.sensor_columns)} = {self.sensor_columns}")
+                raise ValueError("Unknown sensor columns argument: " + str(self.sensor_columns))
 
-            if self.selected_columns is not None:
-                self.sensor_count = len(self.selected_columns)
-                self.logger.info(f"Selected {self.sensor_count} sensors")
-
-            # Update each patient's dataset to adjust selected sensors based on above processes
-            self.sensor_selection_trf = ps.ApplySensorSelection(selection=self.selected_columns)
-            self.data_maps = {l_p_s_t_tuple: self.sensor_selection_trf.transform(mat_d)
-                              for l_p_s_t_tuple, mat_d in tqdm(self.data_maps.items(),
-                                                               desc='Applying sensor selection')}
-
-            # -
-            # Create a DataFrame to store mapping and labels to all windows identified across participant data maps
-            sample_ix_df_l = list()
-            # Specify types to keep dataframe size manageable - ORDER MATTERS
-            key_col_dtypes = {'label': 'int8', 'sample_ix': 'int32', 'location': 'string',
-                              'patient': 'int8', 'session': 'int8', 'trial': 'int8'}
-            self.key_cols = list(key_col_dtypes.keys())
-            if self.flatten_sensors_to_samples:
-                # This will add a new field that uniquely identifies a sample (the 'channel')
-                cols = self.key_cols + ['start_t', 'stop_t', 'indices']
-                self.key_cols.insert(2, 'channel')
-                self.k_select_offset = 3
-            else:
-                self.k_select_offset = 2
-
-            # sample_index_maps maps the pt. to the class label, to a list of time series indices for pandas
-            for l_p_s_t, index_map in self.sample_index_maps.items():
-                self.logger.info(f"Processing participant {l_p_s_t} index, having keys: {list(index_map.keys())}")
-                # Pull out the dictionary results of pipeline outputs for this patients
-                _data_map = self.data_maps[l_p_s_t]
-                # Determine columns
-                key_l = list(l_p_s_t)
-
-                # Unpack a list of data tuples that will create a Dataframe
-                # TODO: minimize mem footprint - can we generate a typed structured numpy arr, then from_records()?
-                patient_ixes = [tuple([label_code, ix_i] + key_l + [_ix.min(), _ix.max(), _ix])
-                                for label_code, indices_l in index_map.items()
-                                for ix_i, _ix in enumerate(indices_l)]
-                p_ix_df = pd.DataFrame(patient_ixes, columns=cols)
-                p_ix_df = p_ix_df.astype(key_col_dtypes)
-
-                # Store a numeric index into underlying numpy array for faster indexing
-                if 'signal' in _data_map:
-                    signal_df = _data_map['signal']
-                    p_ix_df['start_ix'] = signal_df.index.get_indexer(p_ix_df.start_t)
-
-                # #TODO: Is this still necessary? Determining the sentence code for every window sample from scratch
-                if 'word_start_stop_times' in self.data_maps[l_p_s_t]:
-                    self.logger.info(f"word_start_stop_times found - aligning all index start times to a sentence code")
-                    wsst_df = self.data_maps[l_p_s_t]['word_start_stop_times']
-                    assert p_ix_df.start_t.is_unique, f"p_ix_df.start_t is not unique: {p_ix_df.start_t.value_counts()}"
-                    assert wsst_df.index.is_unique, f"wsst_df.index is not unique: {wsst_df.index.value_counts()}"
-                    nearest_ixes = wsst_df.index.get_indexer(p_ix_df.start_t, method='nearest')
-                    p_ix_df['sent_code'] = wsst_df.iloc[nearest_ixes].stim_sentcode.values
-
-                if self.flatten_sensors_to_samples:
-                    self.logger.info(
-                        f"flatten_sensors_to_samples selected - creating channel/sensor labels for samples")
-                    pt_selected_columns = _data_map['selected_columns']
-                    # Channel column will be exploded on to lengthen dataframe by X self.selected_columns
-                    p_ix_df['channel'] = [pt_selected_columns] * len(p_ix_df)
-                    self.logger.debug("exploding sensor data - does this take a while?")
-                    # Repeat rows by unique values in the list of channels in each row
-                    p_ix_df = p_ix_df.explode('channel')
-
-                sample_ix_df_l.append(p_ix_df)
-
-            self.logger.info(f"Combining all of {len(sample_ix_df_l)} index frames")
-            self.sample_ix_df = pd.concat(sample_ix_df_l).reset_index(drop=True)
-
-            # Auto make a reindex map from a reindex_col's every unique value
-            if self.label_reindex_col is not None:
-                self.label_reindex_ix = self.key_cols.index(self.label_reindex_col)
-            elif self.label_reindex_col is None and self.label_reindex_map is not None:
-                raise ValueError("label_reindex_col is required when label_reindex_map is provided")
-
-            if self.label_reindex_map is None and self.label_reindex_col is not None:
-                unique_reindex_labels = list(sorted(self.sample_ix_df[self.label_reindex_col].unique()))
-                self.label_reindex_map = {l: i for i, l in enumerate(unique_reindex_labels)}
-
-            self.logger.info("Converting dataframe to a flat list of key variables (self.flat_keys)")
-            self.ixed_sample_ix_df = self.sample_ix_df.set_index(self.key_cols).sort_index()
-            self.flat_keys = self.ixed_sample_ix_df.index
-            self.logger.info(f"Extracting mapping of ({self.key_cols})->indices")
-            self.flat_index_map = self.ixed_sample_ix_df.indices
-            self.flat_ix_map = self.ixed_sample_ix_df.start_ix
-
-            self.logger.info(f"Length of flat index map: {len(self.flat_index_map)}")
-
+        elif isinstance(self.sensor_columns, list):
+            self.selected_columns = self.sensor_columns
         else:
-            # print("Warning: using naive shared-referencing across objects - only use when feeling lazy")
-            self.logger.warning("Warning: using naive shared-referencing across objects - only use when feeling lazy")
-            # self.mfcc_m = self.data_from.mfcc_m
-            self.data_maps = self.data_from.data_maps
-            self.n_samples_per_window = self.data_from.n_samples_per_window
-            self.sample_index_maps = self.data_from.sample_index_maps
-            self.flat_index_map = self.data_from.flat_index_map
-            self.flat_ix_map = self.data_from.flat_ix_map
-            self.flat_keys = self.data_from.flat_keys
-            self.key_cols = self.data_from.key_cols
-            self.k_select_offset = self.data_from.k_select_offset
-            # self.logger.info("Copying over sample ix dataframe")
-            self.sample_ix_df = self.data_from.sample_ix_df.copy()
-            self.ixed_sample_ix_df = self.data_from.ixed_sample_ix_df.copy()
-            self.selected_columns = self.data_from.selected_columns
-            self.flatten_sensors_to_samples = self.data_from.flatten_sensors_to_samples
-            self.extra_output_keys = self.data_from.extra_output_keys
-            self.fs_signal = self.data_from.fs_signal
-            self.label_reindex_col = self.data_from.label_reindex_col
-            self.label_reindex_ix = self.data_from.label_reindex_ix
-            self.label_reindex_map = self.data_from.label_reindex_map
+            raise ValueError(f"Can't use sensor_columns of {type(self.sensor_columns)} = {self.sensor_columns}")
+
+        if self.selected_columns is not None:
+            self.sensor_count = len(self.selected_columns)
+            #self.logger.info(f"Selected {self.sensor_count} sensors")
+            self.logger.info(f"Selected {self.sensor_count} columns using {self.sensor_columns} method: "
+                             f"{', '.join(map(str, self.selected_columns))}")
+
+        # Update each patient's dataset to adjust selected sensors based on above processes
+        self.sensor_selection_trf = ps.ApplySensorSelection(selection=self.selected_columns)
+        self.data_maps = {l_p_s_t_tuple: self.sensor_selection_trf.transform(mat_d)
+                          for l_p_s_t_tuple, mat_d in tqdm(self.data_maps.items(),
+                                                           desc='Applying sensor selection')}
+
+        # -
+        # Create a DataFrame to store mapping and labels to all windows identified across participant data maps
+        sample_ix_df_l = list()
+        # Specify types to keep dataframe size manageable - ORDER MATTERS
+        key_col_dtypes = {'label': 'int8', 'sample_ix': 'int32', 'location': 'category',#'location': 'string',
+                          'patient': 'int8', 'session': 'int8', 'trial': 'int8'}
+        self.key_cols = list(key_col_dtypes.keys())
+        cols = self.key_cols + ['start_t', 'stop_t']#, 'indices']
+        if self.flatten_sensors_to_samples:
+            # This will add a new field that uniquely identifies a sample (the 'channel')
+            self.key_cols.insert(2, 'channel')
+            # The index in our key of the patient tuple values (loc, pt, session, trial)
+            self.k_select_offset = 3
+        else:
+            self.k_select_offset = 2
+
+        # sample_index_maps maps the pt. to the class label, to a list of time series indices for pandas
+        for l_p_s_t, index_map in self.sample_index_maps.items():
+            self.logger.info(f"Processing participant {l_p_s_t} index, having keys: {list(index_map.keys())}")
+            # Pull out the dictionary results of pipeline outputs for this patients
+            _data_map = self.data_maps[l_p_s_t]
+            # Determine columns
+            key_l = list(l_p_s_t)
+
+            # Unpack a list of data tuples that will create a Dataframe
+            # TODO: minimize mem footprint - can we generate a typed structured numpy arr, then from_records()?
+            patient_ixes = [tuple([label_code, ix_i] + key_l + [_ix.min(), _ix.max()])
+                            for label_code, indices_l in index_map.items()
+                            for ix_i, _ix in enumerate(indices_l)]
+            p_ix_df = pd.DataFrame(patient_ixes, columns=cols)
+            p_ix_df = p_ix_df.astype(key_col_dtypes)
+
+            # Store a numeric index into underlying numpy array for faster indexing
+            if 'signal' in _data_map:
+                signal_df = _data_map['signal']
+                p_ix_df['start_ix'] = signal_df.index.get_indexer(p_ix_df.start_t)
+
+            # #TODO: Is this still necessary? Determining the sentence code for every window sample from scratch
+            if 'word_start_stop_times' in self.data_maps[l_p_s_t]:
+                self.logger.info(f"word_start_stop_times found - aligning all index start times to a sentence code")
+                wsst_df = self.data_maps[l_p_s_t]['word_start_stop_times']
+                assert p_ix_df.start_t.is_unique, f"p_ix_df.start_t is not unique: {p_ix_df.start_t.value_counts()}"
+                assert wsst_df.index.is_unique, f"wsst_df.index is not unique: {wsst_df.index.value_counts()}"
+                nearest_ixes = wsst_df.index.get_indexer(p_ix_df.start_t, method='nearest')
+                p_ix_df['sent_code'] = wsst_df.iloc[nearest_ixes].stim_sentcode.values
+
+            if self.flatten_sensors_to_samples:
+                self.logger.info(
+                    f"flatten_sensors_to_samples selected - creating channel/sensor labels for samples")
+                pt_selected_columns = _data_map['selected_columns']
+                # Channel column will be exploded on to lengthen dataframe by X self.selected_columns
+                p_ix_df['channel'] = [pt_selected_columns] * len(p_ix_df)
+                self.logger.debug("exploding sensor data - does this take a while?")
+                # Repeat rows by unique values in the list of channels in each row
+                p_ix_df = p_ix_df.explode('channel')
+
+            sample_ix_df_l.append(p_ix_df)
+
+        self.logger.info(f"Combining all of {len(sample_ix_df_l)} index frames")
+        self.sample_ix_df = pd.concat(sample_ix_df_l).reset_index(drop=True)
+        self.sample_ix_df['sent_code'] = self.sample_ix_df['sent_code'].astype('category')
+        if self.flatten_sensors_to_samples:
+            self.sample_ix_df['channel'] = self.sample_ix_df['channel'].astype('category')
+
+        # Auto make a reindex map from a reindex_col's every unique value
+        if self.label_reindex_col is not None:
+            self.label_reindex_ix = self.key_cols.index(self.label_reindex_col)
+        elif self.label_reindex_col is None and self.label_reindex_map is not None:
+            raise ValueError("label_reindex_col is required when label_reindex_map is provided")
+
+        if self.label_reindex_map is None and self.label_reindex_col is not None:
+            unique_reindex_labels = list(sorted(self.sample_ix_df[self.label_reindex_col].unique()))
+            self.label_reindex_map = {l: i for i, l in enumerate(unique_reindex_labels)}
+
+        self.logger.info("Converting dataframe to a flat list of key variables (self.flat_keys)")
+        self.ixed_sample_ix_df = self.sample_ix_df.set_index(self.key_cols).sort_index()
+        self.flat_keys = self.ixed_sample_ix_df.index
+        self.logger.info(f"Extracting mapping of ({self.key_cols})->indices")
+        #self.flat_index_map = self.ixed_sample_ix_df.indices
+        self.flat_ix_map = self.ixed_sample_ix_df.start_ix
+
+        self.logger.info(f"Length of sample index map: {len(self.sample_ix_df)}")
+
+    def initialize(self):
+        self._init_pipeline()
+
+        if self.data_from is not None:
+            self.with_data_from(self.data_from)
+        else:
+            self.load_and_pre_process()
 
         self.select(self.selected_flat_indices)
 
@@ -587,13 +607,12 @@ class BaseASPEN(BaseDataset):
     # Entry point to get data
     @classmethod
     def load_data(cls, location=None, patient=None, session=None, trial=None, base_path=None,
-                  sensor_columns=None, subset=None):
+                  subset=None):
 
         location = cls.default_location if location is None else location
         patient = cls.default_patient if patient is None else patient
         session = cls.default_session if session is None else session
         trial = cls.default_trial if trial is None else trial
-        sensor_columns = cls.default_sensor_columns if sensor_columns is None else sensor_columns
 
         cls.logger.info(f"-----------Subset: {str(subset)}------------")
         cls.logger.info(f"---{patient}-{session}-{trial}-{location}---")
@@ -678,7 +697,6 @@ class BaseASPEN(BaseDataset):
         #np_ecog_arr = kws['signal'].values.T
         np_ecog_arr = kws['signal'].T
 
-        # if self.flatten_sensors_to_samples:
         # Always pass a list/array for channels, even if only 1, to maintain the dimension
         if channel_select is not None:
             np_ecog_arr = np_ecog_arr[channel_select]  # [None, :]
@@ -689,17 +707,18 @@ class BaseASPEN(BaseDataset):
 
         kws['signal_arr'] = torch.from_numpy(np_ecog_arr).float()
 
-        # extra_output_keys = ['sensor_ras_coord_arr']
         extra_output_keys = [extra_output_keys] if isinstance(extra_output_keys, str) else extra_output_keys
         if isinstance(extra_output_keys, list):
-            kws.update({k: torch.from_numpy(data_map[k]).float() if isinstance(data_map[k], np.ndarray) else data_map[k]
+            kws.update({k:  torch.from_numpy(data_map[k]).float() if isinstance(data_map[k], np.ndarray)
+                            else data_map[k]
                         for k in extra_output_keys})
 
             if 'sensor_ras_coord_arr' in kws and channel_select is not None:
-                #                print(channel_select)
-                #                if not isinstance(channel_select[0], int):
-                #                    print("WHAT")
                 kws['sensor_ras_coord_arr'] = kws['sensor_ras_coord_arr'][channel_select].unsqueeze(0)
+        elif extra_output_keys is None:
+            pass
+        else:
+            raise ValueError(f"Can't use extra_output_keys with type {extra_output_keys}")
 
         if all_input_transform is not None:
             # print("Apply transform to shape of " + str(np_ecog_arr.shape))
@@ -805,4 +824,5 @@ class BaseASPEN(BaseDataset):
         class_labels = [class_val_to_label_d[i] for i in range(len(class_val_to_label_d))]
         return class_val_to_label_d, class_labels
 
-
+    def get_target_rates(self):
+        return (1. / self.sample_ix_df['patient'].value_counts(normalize=True)).sort_index().values

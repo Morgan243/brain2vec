@@ -400,7 +400,7 @@ class Trainer:
  ########
 # Model Options
 @dataclass
-class ModelOptions(JsonSerializable):
+class ModelOptions(JsonSerializable, utils.SetParamsMixIn):
     non_hyperparams: ClassVar[Optional[list]] = ['device']
 
     @classmethod

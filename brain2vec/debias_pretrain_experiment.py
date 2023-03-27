@@ -45,6 +45,7 @@ import numpy as np
 
 from brain2vec.experiments.pretrain import SemiSupervisedExperiment, SemisupervisedCodebookTaskOptions
 from brain2vec.datasets.harvard_sentences import HarvardSentencesDatasetOptions, HarvardSentences
+from brain2vec.models.brain2vec import Brain2VecOptions
 from mmz.experiments import Experiment
 from itertools import combinations
 from mmz.experiments import ResultOptions
@@ -73,11 +74,14 @@ class DebiasPretrainExperiments(JsonSerializable):
     experiment: SemiSupervisedExperiment = SemiSupervisedExperiment(
         result_output=ResultOptions(result_dir=RESULT_PATH, save_model_path=MODEL_PATH),
         dataset=HarvardSentencesDatasetOptions(#train_sets=None,#train_sets,
-                                               batch_size=2048,
-                                               batch_size_eval=2048,
-                                               n_dl_workers=0,
-                                               n_dl_eval_workers=0),
-        task=SemisupervisedCodebookTaskOptions(lr_adjust_patience=3, early_stopping_patience=None, n_epochs=50))
+            pre_processing_pipeline='random_sample',
+            sensor_columns='good_for_participant',
+            batch_size=2048,
+            batch_size_eval=4096,
+            n_dl_workers=0,
+            n_dl_eval_workers=0),
+        model=Brain2VecOptions(n_encoder_heads=5),
+        task=SemisupervisedCodebookTaskOptions(lr_adjust_patience=5, early_stopping_patience=15, n_epochs=100))
 
     choose_n_for_pretrain: int = 2
     n_splits: int = 4
@@ -98,21 +102,12 @@ class DebiasPretrainExperiments(JsonSerializable):
 
         print(f"Running {len(set_of_sets_to_run)}: {set_of_sets_to_run}")
         sleep(5)
-        from copy import copy
+        from copy import deepcopy
 
         for train_sets in set_of_sets_to_run:
             print(f"RUNNING: {train_sets}")
-            pretraining = copy(self.experiment)
+            pretraining = deepcopy(self.experiment)
             pretraining.dataset.train_sets = train_sets
-#            pretraining = SemiSupervisedExperiment(
-#                result_output=ResultOptions(result_dir=RESULT_PATH, save_model_path=MODEL_PATH),
-#                dataset=HarvardSentencesDatasetOptions(train_sets=train_sets,
-#                                                       batch_size=2048,
-#                                                       batch_size_eval=2048,
-#                                                       n_dl_workers=0,
-#                                                       n_dl_eval_workers=0),
-#                task=SemisupervisedCodebookTaskOptions(lr_adjust_patience=3, early_stopping_patience=None, n_epochs=50)
-#            )
 
             if self.device is not None:
                 pretraining.task.device = self.device
