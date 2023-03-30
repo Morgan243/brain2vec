@@ -15,6 +15,7 @@ import pandas as pd
 from typing import ClassVar, Union, Dict, Optional, Tuple
 from dataclasses import field
 from sklearn.metrics import confusion_matrix, classification_report
+import pickle
 from dataclasses import make_dataclass
 
 import attr
@@ -44,6 +45,8 @@ from brain2vec.models import base_fine_tuners as bft
 from brain2vec.experiments import fine_tune as ft
 
 from mmz.models import copy_model_state
+from pathlib import Path
+
 
 logger = utils.get_logger(__name__)
 
@@ -1002,6 +1005,7 @@ class InfoLeakageExperiment(bxp.Experiment):
         default='shadow_classifier_mi')
 
     attacker_model: ft.FineTuningModel = ft.FineTuningModel(fine_tuning_method='1d_linear')
+    task_dataset_dir: str = field(default=None)
 
     # ---
     result_model: torch.nn.Module = field(default=None, init=False)
@@ -1134,9 +1138,28 @@ class InfoLeakageExperiment(bxp.Experiment):
 
     def run(self):
         self.initialize()
+        if self.task_dataset_dir is not None:
+            self.persist_task_dataset()
+            return
+
         self.train()
         self.eval()
         self.save()
+
+    def persist_task_dataset(self):
+        Path(self.task_dataset_dir).mkdir(parents=True, exist_ok=True)
+        for part_name, part_dl in self.eval_dl_map.items():
+            part_p = os.path.join(self.task_dataset_dir, part_name)
+            Path(part_p).mkdir(parents=True, exist_ok=True)
+            for batch_i, batch_d in enumerate(tqdm(part_dl, desc="Persisting task dataset")):
+                batch_p = os.path.join(part_p, f'{batch_i}.pkl')
+                with open(file=batch_p, mode='wb') as f:
+                    pickle.dump(batch_d, f)
+
+        #outputs_map = self.trainer.generate_outputs(**self.eval_dl_map)
+        #for part_name, out_d in outputs_map.items():
+        #    pass
+
 
     def save(self):
         #####
