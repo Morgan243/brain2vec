@@ -825,4 +825,10 @@ class BaseASPEN(BaseDataset):
         return class_val_to_label_d, class_labels
 
     def get_target_rates(self):
-        return (1. / self.sample_ix_df['patient'].value_counts(normalize=True)).sort_index().values
+        if self.label_reindex_col is not None:
+            probas_s = self.sample_ix_df[self.label_reindex_col].apply(self.label_reindex_map.get).value_counts(normalize=True)
+        else:
+            probas_s = self.sample_ix_df['label'].value_counts(normalize=True)
+
+        probas = probas_s.sort_index().values
+        return 1. / probas
