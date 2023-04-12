@@ -11,7 +11,7 @@ from sklearn.model_selection import train_test_split
 
 from tqdm.auto import tqdm
 
-from typing import List, Optional, Type, ClassVar
+from typing import List, Optional, Type, ClassVar, Union
 
 from mmz import utils
 from sklearn.pipeline import Pipeline
@@ -33,9 +33,9 @@ logger = utils.get_logger(__name__)
 @attr.s
 @with_logger
 class BaseASPEN(BaseDataset):
-    env_key = None
-    default_base_path = None
-    all_patient_maps = None
+    env_key: str
+    default_base_path: ClassVar[dict]
+    all_patient_maps: ClassVar[dict]
     default_sensor_columns = list(range(64))
     default_audio_sample_rate = 48000
     default_signal_sample_rate = 1200
@@ -49,14 +49,14 @@ class BaseASPEN(BaseDataset):
         electrodes='electrodes',
         wordcode='wordcode')
 
-    patient_tuples = attr.ib(None)
-    sensor_columns = attr.ib(None)
-    base_path = attr.ib(None)
-    data_subset = attr.ib('Data')
+    patient_tuples: List = attr.ib(None)
+    sensor_columns: Optional[Union[str, List]] = attr.ib(None)
+    base_path: Optional[str] = attr.ib(None)
+    data_subset: str = attr.ib('Data')
 
-    num_mfcc = attr.ib(13)
+    num_mfcc: int = attr.ib(13)
 
-    selected_flat_indices = attr.ib(None)
+    selected_flat_indices: Optional[List] = attr.ib(None)
     transform = attr.ib(None)
     transform_l = attr.ib(attr.Factory(list))
     all_input_transform = attr.ib(None)
@@ -65,8 +65,8 @@ class BaseASPEN(BaseDataset):
     target_transform = attr.ib(None)
     target_transform_l = attr.ib(attr.Factory(list))
 
-    flatten_sensors_to_samples = attr.ib(False)
-    extra_output_keys = attr.ib(None)
+    flatten_sensors_to_samples: bool = attr.ib(False)
+    extra_output_keys: Optional[Union[str, List[str]]] = attr.ib(None)
     post_processing_func = attr.ib(None)
     post_processing_kws = attr.ib(attr.Factory(dict))
 
@@ -85,6 +85,9 @@ class BaseASPEN(BaseDataset):
     initialize_data = attr.ib(True)
     selected_flat_keys = attr.ib(None, init=False)
     label_reindex_ix: Optional[int] = attr.ib(None, init=False)
+
+    data_maps: dict = attr.ib(None, init=False)
+    n_samples_per_window: int = attr.ib(None, init=False)
 
     default_data_subset = 'Data'
     default_location = None
@@ -128,7 +131,7 @@ class BaseASPEN(BaseDataset):
             logger.warning("So pipeline params are unused!")
 
     @classmethod
-    def from_others_data_map(cls, other,
+    def from_others_data_map(cls, other: 'BaseASPEN',
                              label_reindex_col=None,
                              label_reindex_ix=None,
                              label_reindex_map=None):

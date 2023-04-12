@@ -676,7 +676,7 @@ class OneModelMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
     as the final test of the attacker's model
     """
 
-    task_name: str = "membership_inference_classification_fine_tuning"
+    task_name: str = "one_model_mi_classification_fine_tuning"
 
     pretrained_target_model_result_input: Optional[bxp.ResultInputOptions] = None
     dataset: HarvardSentencesDatasetOptions = HarvardSentencesDatasetOptions(
@@ -975,7 +975,7 @@ class OneModelMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
 @with_logger
 @dataclass
 class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
-    task_name: str = "membership_inference_classification_fine_tuning"
+    task_name: str = "shadow_mi_classification_fine_tuning"
     pretrained_shadow_model_result_input_0: Optional[bxp.ResultInputOptions] = None
     pretrained_shadow_model_result_input_1: Optional[bxp.ResultInputOptions] = None
     pretrained_shadow_model_result_input_2: Optional[bxp.ResultInputOptions] = None
@@ -1688,8 +1688,8 @@ class ShadowClassifierTrainer(bmp.Trainer):
 
     def train_inner_step(self, epoch_i, data_batch):
         """
-        Core training method - gradient descent - provided the epoch number and a batch of data and
-        must return a dictionary of losses.
+        Core training method - gradient descent - provided the epoch number
+        and a batch of data and must return a dictionary of losses.
         """
         res_d = dict()
 

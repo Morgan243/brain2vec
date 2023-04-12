@@ -111,7 +111,7 @@ class RandomIntLike:
 
 @attr.s
 class BaseDataset(tdata.Dataset):
-    env_key = None
+    env_key: str
     fs_signal = attr.ib(None, init=False)
 
     _dataset_registry: ClassVar[Dict] = dict()

@@ -141,7 +141,7 @@ class BaseExperimentGrid(JsonSerializable):
     @classmethod
     def recurse_into_attributes_from_dict(cls, o: object, d: Dict, parents=None):
         """
-        o is object with attribute assignments from dictionary d
+        O is object with attribute assignments from dictionary d.
 
         for k through keys in d
             if all(

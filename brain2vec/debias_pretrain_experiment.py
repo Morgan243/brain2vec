@@ -1,42 +1,4 @@
 import os
-
-combos_of_3_participants = ['UCSD-10,UCSD-18,UCSD-19',
- 'UCSD-10,UCSD-18,UCSD-22',
- 'UCSD-10,UCSD-18,UCSD-28',
- 'UCSD-10,UCSD-19,UCSD-22',
- 'UCSD-10,UCSD-19,UCSD-28',
- 'UCSD-10,UCSD-22,UCSD-28',
- 'UCSD-18,UCSD-19,UCSD-22',
- 'UCSD-18,UCSD-19,UCSD-28',
- 'UCSD-18,UCSD-22,UCSD-28',
- 'UCSD-19,UCSD-22,UCSD-28',
- 'UCSD-4,UCSD-10,UCSD-18',
- 'UCSD-4,UCSD-10,UCSD-19',
- 'UCSD-4,UCSD-10,UCSD-22',
- 'UCSD-4,UCSD-10,UCSD-28',
- 'UCSD-4,UCSD-18,UCSD-19',
- 'UCSD-4,UCSD-18,UCSD-22',
- 'UCSD-4,UCSD-18,UCSD-28',
- 'UCSD-4,UCSD-19,UCSD-22',
- 'UCSD-4,UCSD-19,UCSD-28',
- 'UCSD-4,UCSD-22,UCSD-28',
- 'UCSD-4,UCSD-5,UCSD-10',
- 'UCSD-4,UCSD-5,UCSD-18',
- 'UCSD-4,UCSD-5,UCSD-19',
- 'UCSD-4,UCSD-5,UCSD-22',
- 'UCSD-4,UCSD-5,UCSD-28',
- 'UCSD-5,UCSD-10,UCSD-18',
- 'UCSD-5,UCSD-10,UCSD-19',
- 'UCSD-5,UCSD-10,UCSD-22',
- 'UCSD-5,UCSD-10,UCSD-28',
- 'UCSD-5,UCSD-18,UCSD-19',
- 'UCSD-5,UCSD-18,UCSD-22',
- 'UCSD-5,UCSD-18,UCSD-28',
- 'UCSD-5,UCSD-19,UCSD-22',
- 'UCSD-5,UCSD-19,UCSD-28',
- 'UCSD-5,UCSD-22,UCSD-28']
-
-
 from mmz.utils import get_logger
 from dataclasses import dataclass
 from simple_parsing.helpers import JsonSerializable
@@ -73,14 +35,14 @@ all_patient_set_strs = [f"{k}-{v}"
 class DebiasPretrainExperiments(JsonSerializable):
     experiment: SemiSupervisedExperiment = SemiSupervisedExperiment(
         result_output=ResultOptions(result_dir=RESULT_PATH, save_model_path=MODEL_PATH),
-        dataset=HarvardSentencesDatasetOptions(#train_sets=None,#train_sets,
+        dataset=HarvardSentencesDatasetOptions(
             pre_processing_pipeline='random_sample',
             sensor_columns='good_for_participant',
             batch_size=2048,
             batch_size_eval=4096,
             n_dl_workers=0,
             n_dl_eval_workers=0),
-        model=Brain2VecOptions(n_encoder_heads=5),
+        model=Brain2VecOptions(n_encoder_heads=4),
         task=SemisupervisedCodebookTaskOptions(lr_adjust_patience=5, early_stopping_patience=15, n_epochs=100))
 
     choose_n_for_pretrain: int = 2
