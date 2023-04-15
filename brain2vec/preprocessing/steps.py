@@ -223,25 +223,28 @@ class ReplaceSignalWithPinkNoise(DictTrf):
     signal_rate_key = attr.ib('fs_signal')
     output_key = attr.ib(None)
 
-    method: str = 'basic'
-    scale: float = 100
-    bias: float = 5
+    method: str = attr.ib('matched')
+    scale: float = attr.ib(100)
+    bias: float = attr.ib(5)
 
     def __post_init__(self):
         assert self.method in ('basic', 'matched', 'random')
 
-    @staticmethod
-    def get_noise_proxy_for_signal(signal):
-        if self.method == 'basic':
-            return pknoise.get_series(signal.shape[0]).astype('float32')
-        elif self.method == 'matched':
-            s = pknoise.get_series(signal.shape[0]).astype('float32')
-            s = s * signal.std() + signal.mean()
+    @classmethod
+    def get_noise_proxy_for_signal(cls, signal_s, pknoise, method):
+        if method == 'basic':
+            return pknoise.get_series(signal_s.shape[0]).astype('float32')
+        elif method == 'matched':
+            s = pknoise.get_series(signal_s.shape[0]).astype('float32')
+            std = signal_s.std() / 5.
+            mean = signal_s.mean()
+            cls.logger.info(f"MATCH (MEAN, STD): {mean}, {std}")
+            s = s * std + mean
             return s
-        elif self.method == 'random':
+        elif method == 'random':
             scale = (np.random.rand() - 0.5) * 2 * self.scale
             bias = (np.random.rand() - 0.5) * 2 * self.bias
-            s = pknoise.get_series(signal.shape[0]).astype('float32')
+            s = pknoise.get_series(signal_s.shape[0]).astype('float32')
             s = s * scale + bias
             return s
 
@@ -253,8 +256,8 @@ class ReplaceSignalWithPinkNoise(DictTrf):
         pknoise = pyplnoise.PinkNoise(fs_signal, 1e-2, fs_signal // 2)
         from tqdm.auto import tqdm
 
-        pk_df = pd.DataFrame({k: self.get_noise_proxy_for_signal(signal) for k in
-                              tqdm(range(signal.shape[1]), desc='Generating PinkNoise')})
+        pk_df = pd.DataFrame({k: self.get_noise_proxy_for_signal(signal.iloc[:, k], pknoise, method=self.method) 
+                              for k in tqdm(range(signal.shape[1]), desc='Generating PinkNoise')})
 
         if isinstance(signal, pd.DataFrame):
             pk_df.columns = signal.columns
