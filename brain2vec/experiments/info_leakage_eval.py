@@ -535,7 +535,7 @@ class ReidentificationTask(DatasetWithModelBaseTask):
     squeeze_target: ClassVar[bool] = True
 
     def make_criteria_and_target_key(self):
-        cls_rates = self.dataset_with_model_d["train"].dataset.get_target_rates()
+        cls_rates = self.dataset_with_model_d["train"].dataset.get_target_weights()
         self.logger.info(f"WEIGHTS: {cls_rates}")
         weight = torch.Tensor(cls_rates).to(self.device)
         criterion = torch.nn.CrossEntropyLoss(weight=weight)
@@ -702,7 +702,7 @@ class OneModelMembershipInferenceFineTuningTask(DatasetWithModelBaseTask):
     target_model_results: dict = field(default=None, init=False)
 
     def make_criteria_and_target_key(self):
-        cls_rates = self.dataset_with_model_d["train"].dataset.get_target_rates()
+        cls_rates = self.dataset_with_model_d["train"].dataset.get_target_weights()
         self.logger.info(f"WEIGHTS: {cls_rates}")
         weight = torch.Tensor(cls_rates).to(self.device)
         criterion = torch.nn.CrossEntropyLoss(weight=weight)
