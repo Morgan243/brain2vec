@@ -223,6 +223,28 @@ class ReplaceSignalWithPinkNoise(DictTrf):
     signal_rate_key = attr.ib('fs_signal')
     output_key = attr.ib(None)
 
+    method: str = 'basic'
+    scale: float = 100
+    bias: float = 5
+
+    def __post_init__(self):
+        assert self.method in ('basic', 'matched', 'random')
+
+    @staticmethod
+    def get_noise_proxy_for_signal(signal):
+        if self.method == 'basic':
+            return pknoise.get_series(signal.shape[0]).astype('float32')
+        elif self.method == 'matched':
+            s = pknoise.get_series(signal.shape[0]).astype('float32')
+            s = s * signal.std() + signal.mean()
+            return s
+        elif self.method == 'random':
+            scale = (np.random.rand() - 0.5) * 2 * self.scale
+            bias = (np.random.rand() - 0.5) * 2 * self.bias
+            s = pknoise.get_series(signal.shape[0]).astype('float32')
+            s = s * scale + bias
+            return s
+
     def process(self, data_map):
         import pyplnoise
         signal = data_map[self.signal_key]
@@ -231,7 +253,7 @@ class ReplaceSignalWithPinkNoise(DictTrf):
         pknoise = pyplnoise.PinkNoise(fs_signal, 1e-2, fs_signal // 2)
         from tqdm.auto import tqdm
 
-        pk_df = pd.DataFrame({k: pknoise.get_series(signal.shape[0]).astype('float32') for k in
+        pk_df = pd.DataFrame({k: self.get_noise_proxy_for_signal(signal) for k in
                               tqdm(range(signal.shape[1]), desc='Generating PinkNoise')})
 
         if isinstance(signal, pd.DataFrame):
