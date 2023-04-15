@@ -90,7 +90,7 @@ class SingleChannelAttacker(torch.nn.Module):
                 for i in range(self.n_layers - 1)
             ],
             *zm.LinearBlock.make_linear_block(
-                self.linear_hidden_n,
+                self.outputs,
                 dropout_rate=self.dropout_rate,
                 batch_norm=batch_norm,
             ),
@@ -123,15 +123,15 @@ class MultiChannelAttacker(torch.nn.Module):
         self.dropout_rate = dropout
         self.batch_norm = batch_norm
 
+        self.n_layers = n_layers
         self.n_channels, self.n_times, self.n_embed = self.input_shape
         self.h_dim = self.n_channels * self.n_times * self.n_embed
+        self.linear_hidden_n = linear_hidden_n
 
         self.hidden_encoder_input = hidden_encoder
 
         self.classifier_head = torch.nn.Identity()
 
-        a = np.arange(100)
-        a.reshape()
         if isinstance(hidden_encoder, torch.nn.Module):
             print(foo)
             self.hidden_encoder = hidden_encoder
@@ -147,7 +147,7 @@ class MultiChannelAttacker(torch.nn.Module):
                     for i in range(self.n_layers - 1)
                 ],
                 *zm.LinearBlock.make_linear_block(
-                    self.linear_hidden_n,
+                    self.outputs,
                     dropout_rate=self.dropout_rate,
                     batch_norm=batch_norm,
                 ),
@@ -242,12 +242,16 @@ class DatasetWithModel:
         return self
 
     def split_on_key_level(
-        self, keys, stratify: Optional = None, test_size: Optional = None
-    ) -> Tuple["DatasetWithModel", "DatasetWithModel"]:
+            self,
+            keys,
+            # These are passed eventually to sklearn's train_test_split
+            stratify: Optional[Union[np.ndarray, pd.DataFrame]] = None,
+            test_size: Optional[Union[int, float]] = None
+            ) -> Tuple["DatasetWithModel", "DatasetWithModel"]:
         assert self.dataset is not None
         split_0, split_1 = self.dataset.split_select_random_key_levels(
-            keys=keys, stratify=stratify, test_size=test_size
-        )
+                keys=keys, stratify=stratify, test_size=test_size
+                )
 
         split_0_dset_with_model = DatasetWithModel(
             p_tuples=self.p_tuples,
@@ -322,9 +326,7 @@ class DatasetWithModel:
             self.create_mc_model()
 
         self.feature_model = (
-            self.mc_member_model.to(device)
-            if multi_channel
-            else self.member_model.to(device)
+            self.mc_member_model.to(device) if multi_channel else self.member_model.to(device)
         )
 
         model_out_dataset = SequenceWrapper(self.dataset)
@@ -1390,10 +1392,10 @@ class InfoLeakageExperiment(bxp.Experiment):
     attacker_model: ft.FineTuningModel = ft.FineTuningModel(
         fine_tuning_method="1d_linear"
     )
-    task_dataset_dir: str = field(default=None)
+    task_dataset_dir: Optional[str] = field(default=None)
 
     # ---
-    result_model: torch.nn.Module = field(default=None, init=False)
+    result_model: Optional[torch.nn.Module] = field(default=None, init=False)
 
     shadow_model_results_map: dict = field(default=None, init=False)
     shadow_model_map: dict = field(default=None, init=False)
