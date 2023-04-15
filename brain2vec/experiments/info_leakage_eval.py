@@ -412,7 +412,12 @@ class DatasetWithModel:
 class DatasetWithModelBaseTask(bxp.TaskOptions):
     dataset: datasets.DatasetOptions
 
-    dataset_map: Dict[str, BaseDataset] = field(default=None, init=False)
+    dataset_map: Optional[Dict[str, BaseDataset]] = field(default=None, init=False)
+    dataset_with_model_d: Optional[Dict[str, DatasetWithModel]] = field(default=None, init=False)
+
+    def get_target_rates(self, normalize=True, as_series: bool = False):
+        return {part: dset_with_model.dataset.get_target_rates(normalize=normalize, as_series=as_series)
+                for part, dset_with_model in self.dataset_with_model_d.items()}
 
     @classmethod
     def load_and_check_pretrain_opts(
@@ -1568,6 +1573,7 @@ class InfoLeakageExperiment(bxp.Experiment):
     def save(self):
         #####
         # Prep a results structure for saving - everything must be json serializable (no array objects)
+        dataset_rates = {part: rate_s.to_dict() for part, rate_s in self.task.get_target_rates(normalize=False).items()}
         res_dict = self.create_result_dictionary(
             model_name=self.attacker_model.model_name,
             epoch_outputs=self.attacker_model_train_results,
@@ -1582,6 +1588,7 @@ class InfoLeakageExperiment(bxp.Experiment):
                 else None
                 for k, d in self.dataset_map.items()
             },
+            dataset_rates=dataset_rates,
             best_model_epoch=getattr(self.trainer, "best_model_epoch", None),
             num_trainable_params=utils.number_of_model_params(self.result_model),
             num_params=utils.number_of_model_params(

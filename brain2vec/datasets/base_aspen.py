@@ -827,14 +827,14 @@ class BaseASPEN(BaseDataset):
         class_labels = [class_val_to_label_d[i] for i in range(len(class_val_to_label_d))]
         return class_val_to_label_d, class_labels
 
-    def get_target_rates(self, normalize: bool = True) -> np.ndarray:
+    def get_target_rates(self, normalize: bool = True, as_series: bool = False) -> np.ndarray:
         if self.label_reindex_col is not None:
             rates_s = self.sample_ix_df[self.label_reindex_col].apply(self.label_reindex_map.get).value_counts(normalize=normalize)
         else:
             rates_s = self.sample_ix_df['label'].value_counts(normalize=normalize)
 
-        rates = rates_s.sort_index().values
-        return rates
+        rates = rates_s.sort_index()
+        return rates if as_series else rates.values
 
     def get_target_weights(self) -> np.ndarray:
         rates = self.get_target_rates(normalize=True)
