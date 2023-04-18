@@ -231,7 +231,7 @@ class ReplaceSignalWithPinkNoise(DictTrf):
         assert self.method in ('basic', 'matched', 'random')
 
     @classmethod
-    def get_noise_proxy_for_signal(cls, signal_s, pknoise, method):
+    def get_noise_proxy_for_signal(cls, signal_s, pknoise, method, bias=5, scale=100):
         if method == 'basic':
             return pknoise.get_series(signal_s.shape[0]).astype('float32')
         elif method == 'matched':
@@ -242,8 +242,8 @@ class ReplaceSignalWithPinkNoise(DictTrf):
             s = s * std + mean
             return s
         elif method == 'random':
-            scale = (np.random.rand() - 0.5) * 2 * self.scale
-            bias = (np.random.rand() - 0.5) * 2 * self.bias
+            scale = (np.random.rand() - 0.5) * 2 * scale
+            bias = (np.random.rand() - 0.5) * 2 * bias
             s = pknoise.get_series(signal_s.shape[0]).astype('float32')
             s = s * scale + bias
             return s
