@@ -74,9 +74,7 @@ class BaseExperimentGrid(JsonSerializable):
 
             elif hasattr(self.experiment_base_instance, "dataset"):
                 logger.info("Parameterizing dataset from EXPERIMENT")
-                self.experiment_component_grids_d["dataset"] = {
-                    self.sample_tuples_for: tuple_sets
-                }
+                self.experiment_component_grids_d[f"dataset.{self.sample_tuples_for}"] = tuple_sets
 
         self.experiment_grid_l = list()
         self.experiment_grid_gettr_map = dict()
