@@ -83,7 +83,8 @@ def load_model_from_results(results, base_model_path=None, **kws_update):
 
 
 def upack_result_options_to_columns(results_df: pd.DataFrame,
-                                    options_cols_like='_options'):
+                                    options_cols_like='_options',
+                                    parse_cv_and_epoch_results: bool = False) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
     opt_df_map = {opt_col: results_df[opt_col].apply(pd.Series) for opt_col in
                   results_df.filter(like=options_cols_like).columns}
 
@@ -93,10 +94,32 @@ def upack_result_options_to_columns(results_df: pd.DataFrame,
         options_df = options_df.join(_df[keep_cols].copy())
 
     keep_cols = list(set(options_df.columns.tolist()) - set(results_df.columns.tolist()))
-    #opt_cols = options_df.drop(['model_name', 'save_model_path'], axis=1).columns.tolist()
+    opt_cols = options_df.drop(['model_name', 'save_model_path'], axis=1).columns.tolist()
 
     result_options_df = results_df.join(options_df[keep_cols])
-    return result_options_df
+    if not parse_cv_and_epoch_results:
+        return result_options_df
+
+    cv_results_df = pd.concat([
+        pd.DataFrame(row.cv).assign(experiment_name=row['name'],
+                                    uid=row.uid,
+                                    model_name=row.model_name,
+                                    # Options
+                                    **{opt_name: row[opt_name] for opt_name in opt_cols}
+                                    )
+        for ix, row in result_options_df.iterrows()]).reset_index(names='epoch_num')
+
+    epoch_results_df = pd.concat([
+        pd.DataFrame(row.epoch_outputs).T.assign(experiment_name=row['name'],
+                                                 uid=row.uid,
+                                                 model_name=row.model_name,
+                                                 # Options
+                                                 **{opt_name: row[opt_name] for opt_name in opt_cols}
+
+                                                 )
+        for ix, row in result_options_df.iterrows()]).reset_index(names='epoch_num')
+
+    return result_options_df, cv_results_df, epoch_results_df
 
 @dataclass
 class ResultParsingOptions(JsonSerializable):
