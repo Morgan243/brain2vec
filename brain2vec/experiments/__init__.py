@@ -4,7 +4,7 @@ import os
 import json
 from dataclasses import dataclass
 from simple_parsing.helpers import JsonSerializable
-from typing import Optional
+from typing import Optional, Tuple, Union
 
 from tqdm.auto import tqdm
 import torch
