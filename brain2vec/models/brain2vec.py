@@ -530,7 +530,7 @@ class Brain2Vec(torch.nn.Module):
         # penalize for large features
         # This is in the wave2vec2 fairseq codebase, but this is not an L2 norm...?
         #features_pen = X_f.float().pow(2).mean()
-        features_pen = X.pow(2).sum().sqrt()
+        features_pen = X_f.pow(2).sum().sqrt()
 
         padding_count = 0
 
