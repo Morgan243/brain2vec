@@ -85,12 +85,14 @@ class BaseASPEN(BaseDataset):
 
     initialize_data = attr.ib(True)
     initialize_indices = attr.ib(True)
+    n_init_jobs: int = attr.ib(7, init=True)   
 
     selected_flat_keys = attr.ib(None, init=False)
     label_reindex_ix: Optional[int] = attr.ib(None, init=False)
 
     data_maps: dict = attr.ib(None, init=False)
     n_samples_per_window: int = attr.ib(None, init=False)
+
 
     default_data_subset = 'Data'
     default_location = None
@@ -188,7 +190,7 @@ class BaseASPEN(BaseDataset):
         self.logger.info("Loading data directly, IN PARALLEL!")
         # Each job loads the data and applies the preprocesing pipeline
         mat_data_maps = dict(
-                Parallel(n_jobs=7)(
+                Parallel(n_jobs=self.n_init_jobs)(
                     delayed(self.__class__._load_and_pre_process_parallel_helper)(t, self.pipeline_f, self.data_subset)
                     for t in self.patient_tuples)
                 )
