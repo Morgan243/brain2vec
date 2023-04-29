@@ -70,7 +70,7 @@ class HarvardSentences(BaseASPEN):
                 ps.ParseTimeSeriesArrToFrame(
                     self.mat_d_keys["signal"],
                     self.mat_d_keys["signal_fs"],
-                    1200,
+                    1024,
                     output_key="signal",
                 ),
             ),
@@ -88,8 +88,7 @@ class HarvardSentences(BaseASPEN):
                 ps.ParseTimeSeriesArrToFrame(
                     self.mat_d_keys["stimcode"],
                     self.mat_d_keys["signal_fs"],
-                    # TODO: Check the default rate here - 1024?
-                    1200,
+                    1024,
                     reshape=-1,
                     output_key="stim",
                 ),
@@ -110,6 +109,21 @@ class HarvardSentences(BaseASPEN):
             ("sent_from_start_stop", ps.SentCodeFromStartStopWordTimes()),
             ("all_stim", ps.CreateAllStim()),
         ]
+        parse_random_input_steps = [
+                (
+                    "sensor_selection",
+                    ps.IdentifyGoodAndBadSensors(sensor_selection=self.sensor_columns),
+                    ),
+
+                ("pinknoise", ps.ReplaceSignalWithPinkNoise()),
+                # TODO: Wave2Vec2 standardizes like this
+                #  - but should we keep this in to match or should we batch norm at the top?
+                # ('rescale_signal', pipeline.StandardNormSignal()),
+                ("subsample", ps.SubsampleSignal()),
+                ("sent_from_start_stop", ps.SentCodeFromStartStopWordTimes()),
+                ("all_stim", ps.CreateAllStim()),
+                ]
+
 
         audio_gate_steps = [
             (
@@ -255,9 +269,9 @@ class HarvardSentences(BaseASPEN):
             ),
             "random_sample_pinknoise": Pipeline(
                 parse_arr_steps
-                + parse_input_steps
+                + parse_random_input_steps
                 + [
-                    ("pinknoise", ps.ReplaceSignalWithPinkNoise()),
+                    #("pinknoise", ps.ReplaceSignalWithPinkNoise()),
                     ("rnd_stim", ps.RandomStim(10_000)),
                     ("rnd_indices", ps.WindowSampleIndicesFromIndex(stim_key="random_stim")),
                 ]

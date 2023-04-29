@@ -56,8 +56,9 @@ class PretrainGridSearch(JsonSerializable):
                       quant_num_vars=quant_num_vars,
                       **pos_opts_kws)
                  for pos_opts_kws in pos_opts
-                 for n_enc_layers in [3, 4, 5]
-                 for quant_num_vars in [40, 80]
+                 for n_enc_layers in [5, 6]
+                 for quant_num_vars in [40, 80, 160]
+                 for feature_grad_mult in [1]
                  ]
 
         kws_splits = np.array_split(kws_l, self.n_splits)

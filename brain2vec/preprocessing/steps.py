@@ -238,7 +238,7 @@ class ReplaceSignalWithPinkNoise(DictTrf):
             s = pknoise.get_series(signal_s.shape[0]).astype('float32')
             std = signal_s.std() / 5.
             mean = signal_s.mean()
-            cls.logger.info(f"MATCH (MEAN, STD): {mean}, {std}")
+            #cls.logger.debug(f"MATCH (MEAN, STD): {mean}, {std}")
             s = s * std + mean
             return s
         elif method == 'random':
