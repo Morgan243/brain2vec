@@ -202,6 +202,7 @@ class DatasetOptions(JsonSerializable, utils.SetParamsMixIn):
 
     n_dl_workers: int = 0
     n_dl_eval_workers: int = 0
+    n_init_jobs: int = 7
 
     def make_eval_dl_kws(self):
         #self.dataset_map, self.dl_map, self.eval_dl_map
@@ -224,6 +225,63 @@ class DatasetOptions(JsonSerializable, utils.SetParamsMixIn):
         if self.dl_prefetch_factor is not None:
             dl_kws['prefetch_factor'] = self.dl_prefetch_factor
         return dl_kws
+
+    def make_dataset_kws(self, dataset_cls=None, base_data_kws=None,
+                         train_data_kws=None, cv_data_kws=None, test_data_kws=None,
+                         train_sets_str=None, cv_sets_str=None, test_sets_str=None,
+                         train_p_tuples=None, cv_p_tuples=None, test_p_tuples=None,
+                         train_sensor_columns=None,
+                         pre_processing_pipeline=None,
+                         ):
+        base_data_kws = dict() if base_data_kws is None else base_data_kws
+
+        if dataset_cls is None:
+            dataset_cls = BaseDataset.get_dataset_by_name(self.dataset_name)
+
+        if train_p_tuples is None:
+            train_p_tuples = dataset_cls.make_tuples_from_sets_str(self.train_sets if train_sets_str is None
+                                                                   else train_sets_str)
+        if cv_p_tuples is None:
+            cv_p_tuples = dataset_cls.make_tuples_from_sets_str(self.cv_sets if cv_sets_str is None
+                                                                else cv_sets_str)
+        if test_p_tuples is None:
+            test_p_tuples = dataset_cls.make_tuples_from_sets_str(self.test_sets if test_sets_str is None
+                                                                  else test_sets_str)
+
+        if train_sensor_columns is None and self.sensor_columns is not None:
+            train_sensor_columns = self.sensor_columns
+
+        logger.info("Train tuples: " + str(train_p_tuples))
+        logger.info("CV tuples: " + str(cv_p_tuples))
+        logger.info("Test tuples: " + str(test_p_tuples))
+
+        if isinstance(self.pipeline_params, str):
+            self.pipeline_params = eval(self.pipeline_params)
+
+        base_kws = dict(pre_processing_pipeline=self.pre_processing_pipeline if pre_processing_pipeline is None
+                                                else pre_processing_pipeline,
+                        pipeline_params=self.pipeline_params,
+                        data_subset=self.data_subset,
+                        label_reindex_col=self.label_reindex_col,
+                        extra_output_keys=self.extra_output_keys.split(',') if self.extra_output_keys is not None
+                                          else None,
+                        flatten_sensors_to_samples=self.flatten_sensors_to_samples,
+                        n_init_jobs=self.n_init_jobs)
+
+        base_kws.update(base_data_kws)
+        logger.info(f"Dataset base.py keyword arguments: {base_kws}")
+        train_kws = dict(sensor_columns=train_sensor_columns, patient_tuples=train_p_tuples, **base_kws)
+        cv_kws = dict(patient_tuples=cv_p_tuples, **base_kws)
+        test_kws = dict(patient_tuples=test_p_tuples, **base_kws)
+
+        if train_data_kws is not None:
+            train_kws.update(train_data_kws)
+        if cv_data_kws is not None:
+            cv_kws.update(cv_data_kws)
+        if test_data_kws is not None:
+            test_kws.update(test_data_kws)
+
+        return train_kws, cv_kws, test_kws
 
     def make_datasets_and_loaders(self, dataset_cls=None, base_data_kws=None,
                                   train_data_kws=None, cv_data_kws=None, test_data_kws=None,
@@ -261,55 +319,28 @@ class DatasetOptions(JsonSerializable, utils.SetParamsMixIn):
             three-tuple of (1) map to original dataset (2) map to the constructed dataloaders and
             (3) Similar to two, but not shuffled and larger batch size (for evaluation)
         """
-        base_data_kws = dict() if base_data_kws is None else base_data_kws
         if dataset_cls is None:
             dataset_cls = BaseDataset.get_dataset_by_name(self.dataset_name)
 
-        if train_p_tuples is None:
-            train_p_tuples = dataset_cls.make_tuples_from_sets_str(self.train_sets if train_sets_str is None
-                                                                   else train_sets_str)
-        if cv_p_tuples is None:
-            cv_p_tuples = dataset_cls.make_tuples_from_sets_str(self.cv_sets if cv_sets_str is None
-                                                                else cv_sets_str)
-        if test_p_tuples is None:
-            test_p_tuples = dataset_cls.make_tuples_from_sets_str(self.test_sets if test_sets_str is None
-                                                                  else test_sets_str)
-
-        if train_sensor_columns is None and self.sensor_columns is not None:
-            train_sensor_columns = self.sensor_columns
-
         train_split_kws = dict() if train_split_kws is None else train_split_kws
-        #test_split_kws = dict() if test_split_kws is None else test_split_kws
 
-        logger.info("Train tuples: " + str(train_p_tuples))
-        logger.info("CV tuples: " + str(cv_p_tuples))
-        logger.info("Test tuples: " + str(test_p_tuples))
+        train_kws, cv_kws, test_kws = self.make_dataset_kws(base_data_kws=base_data_kws,
+                                                            train_data_kws=train_data_kws,
+                                                            cv_data_kws=cv_data_kws,
+                                                            test_data_kws=test_data_kws,
 
-        if isinstance(self.pipeline_params, str):
-            self.pipeline_params = eval(self.pipeline_params)
+                                                            train_sets_str=train_sets_str,
+                                                            cv_sets_str=cv_sets_str,
+                                                            test_sets_str=test_sets_str,
 
-        base_kws = dict(pre_processing_pipeline=self.pre_processing_pipeline if pre_processing_pipeline is None
-                                                else pre_processing_pipeline,
-                        pipeline_params=self.pipeline_params,
-                        data_subset=self.data_subset,
-                        label_reindex_col=self.label_reindex_col,
-                        extra_output_keys=self.extra_output_keys.split(',') if self.extra_output_keys is not None
-                                          else None,
-                        flatten_sensors_to_samples=self.flatten_sensors_to_samples)
+                                                            train_p_tuples=train_p_tuples,
+                                                            cv_p_tuples=cv_p_tuples,
+                                                            test_p_tuples=test_p_tuples,
 
-        base_kws.update(base_data_kws)
-        logger.info(f"Dataset base.py keyword arguments: {base_kws}")
-        train_kws = dict(patient_tuples=train_p_tuples, **base_kws)
-        cv_kws = dict(patient_tuples=cv_p_tuples, **base_kws)
-        test_kws = dict(patient_tuples=test_p_tuples, **base_kws)
-
-        if train_data_kws is not None:
-            train_kws.update(train_data_kws)
-        if cv_data_kws is not None:
-            cv_kws.update(cv_data_kws)
-        if test_data_kws is not None:
-            test_kws.update(test_data_kws)
-
+                                                            train_sensor_columns=train_sensor_columns,
+                                                            pre_processing_pipeline=pre_processing_pipeline,
+                                                            )
+        
         dl_kws = self.make_dl_kws()
         logger.info(f"dataloader Keyword arguments: {dl_kws}")
 
@@ -318,7 +349,7 @@ class DatasetOptions(JsonSerializable, utils.SetParamsMixIn):
         logger.info("Using dataset class: %s" % str(dataset_cls))
 
         # Setup train dataset - there is always a train dataset
-        train_dataset = dataset_cls(sensor_columns=train_sensor_columns, **train_kws)
+        train_dataset = dataset_cls(**train_kws)
 
         # Check for some special options on this DatasetOptions
         roll_channels = getattr(self, 'roll_channels', False)

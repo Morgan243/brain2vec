@@ -433,7 +433,17 @@ class Brain2Vec(torch.nn.Module):
         )  # to NxBxTxC
         return negs, neg_idxs
 
-    def forward(self, X, features_only=False, mask=True):
+    def forward(self, X, features_only=False, mask=True, output_loss=False):
+        if output_loss: 
+            out_d = self._forward(X, features_only=False, mask=True)
+            loss_d = Brain2VecTrainer._loss(out_d, cross_entropy_reduction='none')
+            out_d.update(loss_d)
+            out_d['bce_loss'] = out_d['bce_loss'].reshape(X['signal_arr'].shape[0], -1)
+            return out_d
+        else:
+            return self._forward(X, features_only=features_only, mask=mask)
+    
+    def _forward(self, X, features_only=False, mask=True):
         input_d = dict()
         if isinstance(X, dict):
             input_d = X
@@ -616,6 +626,8 @@ class Brain2Vec(torch.nn.Module):
                     code_perplexity=code_ppl, prob_perplexity=prob_ppl,
                     temp=curr_temp)
 
+    def _forward_idx(self, X):
+        out_d = self._forward(X, features_only=True, mask=False)
 
 class MultiChannelBrain2Vec(torch.nn.Module):
     def __init__(self, input_shape, c2v_m: Brain2Vec, hidden_encoder='linear',
@@ -831,8 +843,12 @@ class Brain2VecTrainer(Trainer):
 
         return eval_res_d
 
-    def loss(self, model_output_d, as_tensor=True):
-        logits = model_output_d[self.model_output_logits_key]
+    @staticmethod
+    def _loss(model_output_d, model_output_logits_key='preds', 
+              cross_entropy_reduction='sum',
+              ppl_weight=1, feature_pen_weight=1,
+              as_tensor=True):
+        logits = model_output_d[model_output_logits_key]
         num_vars = model_output_d['num_vars']
         prob_ppl = model_output_d['prob_perplexity']
 
@@ -841,19 +857,47 @@ class Brain2VecTrainer(Trainer):
         target = torch.zeros_like(logits)
 
         loss = F.cross_entropy(
-            logits, target[:, 0].long(), reduction='sum' #weights, reduction=reduction
+            logits, target[:, 0].long(), reduction=cross_entropy_reduction, #weights, reduction=reduction
         )
         #loss = F.binary_cross_entropy_with_logits(
         #    logits, target.float(), reduction='sum' #weights, reduction=reduction
         #)
 
-        ppl_l = ((num_vars - prob_ppl) / num_vars) * self.ppl_weight
-        fpen_l = model_output_d["features_pen"] * self.feature_pen_weight
+        ppl_l = ((num_vars - prob_ppl) / num_vars) * ppl_weight
+        fpen_l = model_output_d["features_pen"] * feature_pen_weight
 
         o = dict(bce_loss=loss, perplexity=ppl_l, feature_pen=fpen_l)
         if not as_tensor:
             o = {k: v.detach().cpu().item() for k, v in o.items()}
         return o
+
+    def loss(self, model_output_d, as_tensor=True):
+        return self._loss(model_output_d, model_output_logits_key=self.model_output_logits_key,
+                          cross_entropy_reduction='sum', ppl_weight=self.ppl_weight, 
+                          feature_pen_weight=self.feature_pen_weight,
+                          as_tensor=as_tensor)
+        #logits = model_output_d[self.model_output_logits_key]
+        #num_vars = model_output_d['num_vars']
+        #prob_ppl = model_output_d['prob_perplexity']
+
+        #logits = logits.transpose(0, 2)
+        #logits = logits.reshape(-1, logits.size(-1))
+        #target = torch.zeros_like(logits)
+
+        #loss = F.cross_entropy(
+        #    logits, target[:, 0].long(), reduction='sum' #weights, reduction=reduction
+        #)
+        ##loss = F.binary_cross_entropy_with_logits(
+        ##    logits, target.float(), reduction='sum' #weights, reduction=reduction
+        ##)
+
+        #ppl_l = ((num_vars - prob_ppl) / num_vars) * self.ppl_weight
+        #fpen_l = model_output_d["features_pen"] * self.feature_pen_weight
+
+        #o = dict(bce_loss=loss, perplexity=ppl_l, feature_pen=fpen_l)
+        #if not as_tensor:
+        #    o = {k: v.detach().cpu().item() for k, v in o.items()}
+        #return o
 
     def score_training(self, model_output_d, as_tensor=False):
         """training score metrics that don't require gradient, won't have .backward() called,
