@@ -94,7 +94,8 @@ def upack_result_options_to_columns(results_df: pd.DataFrame,
         options_df = options_df.join(_df[keep_cols].copy())
 
     keep_cols = list(set(options_df.columns.tolist()) - set(results_df.columns.tolist()))
-    opt_cols = options_df.drop(['model_name', 'save_model_path'], axis=1).columns.tolist()
+    opt_cols = [c for c in options_df.columns.tolist() if c not in results_df.columns.tolist()]
+    #opt_cols = options_df.drop(['model_name', 'save_model_path'], axis=1).columns.tolist()
 
     result_options_df = results_df.join(options_df[keep_cols])
     if not parse_cv_and_epoch_results:
