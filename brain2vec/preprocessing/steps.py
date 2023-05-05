@@ -34,6 +34,7 @@ class ParseTimeSeriesArrToFrame(DictTrf):
     dtype = attr.ib(None)
     reshape = attr.ib(None)
     output_key = attr.ib(None)
+    downcast: bool = attr.ib(True)
 
     def process(self, data_map):
         # determine what the output key will be
@@ -69,6 +70,8 @@ class ParseTimeSeriesArrToFrame(DictTrf):
 
         self.logger.info(f"{self.array_key}@{fs}, shape: {arr_df.shape}, [{arr_df.index[0], arr_df.index[-1]}]")
         assert arr_df.index.is_unique, f"NON UNIQUE TIME SERIES INDEX FOR KEY {self.array_key}"
+        
+        arr_df = arr_df.apply(pd.to_numeric, downcast='float')
 
         return {self.fs_key: fs, arr_key: arr_df}
 
