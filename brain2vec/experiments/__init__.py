@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from glob import glob
 import os
@@ -12,6 +13,12 @@ from brain2vec import models
 
 
 def load_results_to_frame(p, config_params=None):
+    if isinstance(p, (list, tuple, np.ndarray)):
+        return pd.concat([
+            load_results_to_frame(_p, config_params=config_params)
+            for _p in p
+        ], axis=0).reset_index(drop=True)
+
     result_files = glob(p)
 
     json_result_data = [json.load(open(f)) for f in tqdm(result_files)]
@@ -56,7 +63,7 @@ def load_results_to_frame(p, config_params=None):
     return fixed_config_cols, config_cols, results_df
 
 
-def load_model_from_results(results, base_model_path=None, **kws_update):
+def load_model_from_results(results, base_model_path=None, load_weights=True, **kws_update):
     model_kws = results['model_kws']
 
     if base_model_path is not None:
@@ -74,10 +81,11 @@ def load_model_from_results(results, base_model_path=None, **kws_update):
     model_kws.update(kws_update)
     model, _ = models.make_model(model_name=results['model_name'], model_kws=model_kws)
 
-    with open(model_path, 'rb') as f:
-        model_state = torch.load(f)
+    if load_weights:
+        with open(model_path, 'rb') as f:
+            model_state = torch.load(f)
 
-    model.load_state_dict(model_state)
+        model.load_state_dict(model_state)
     return model
     #model.to(options.device)
 
@@ -98,6 +106,13 @@ def upack_result_options_to_columns(results_df: pd.DataFrame,
     #opt_cols = options_df.drop(['model_name', 'save_model_path'], axis=1).columns.tolist()
 
     result_options_df = results_df.join(options_df[keep_cols])
+    # When grid searching on results (i.e. pretrained models), make sure that we have a matching column
+    # to how it will be parameterized in the experiment grid
+    if 'model_base_path' not in result_options_df.columns:
+        result_options_df['model_base_path'] = result_options_df.save_model_path.map(os.path.split).explode().reset_index(drop=True).iloc[::2].values
+    if 'result_file' not in result_options_df.columns:
+        result_options_df['result_file'] = result_options_df['path']
+
     if not parse_cv_and_epoch_results:
         return result_options_df
 

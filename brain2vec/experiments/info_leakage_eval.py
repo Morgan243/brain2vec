@@ -8,6 +8,11 @@ from os.path import join as pjoin
 import matplotlib.pyplot
 import sklearn.linear_model
 import torch
+try:
+    from torch import _dynamo 
+    _dynamo.config.suppress_errors = True
+except:
+    print("Unable to import dynamo")
 from typing import List, Optional
 from tqdm.auto import tqdm
 import numpy as np
@@ -25,6 +30,7 @@ from mmz import utils
 
 from mmz import experiments as bxp
 from mmz import models as zm
+from mmz.models import base_fine_tuners as zm_bft
 
 from brain2vec import models as bmp
 from brain2vec import datasets
@@ -237,7 +243,7 @@ class DatasetWithModel:
             assert self.mc_n_channels_to_sample > 0, msg
             n_channels = self.mc_n_channels_to_sample
 
-        self.mc_member_model = bft.MultiChannelFromSingleChannel(
+        self.mc_member_model = zm_bft.MultiChannelFromSingleChannel(
             input_shape=(n_channels, 256, self.member_model.C),
             model_1d=self.member_model,
             model_output_key=self.model_output_key,
@@ -1149,12 +1155,12 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
                         for sm_id, sm_dset_with_model in dset_with_model_sm_d.items()
                             }
             # Resulting frame will have columns for each part and 
-            totals_s = pd.DataFrame(totals_d).T.sum()
-            self.logger.info(f"TOTALS: {totals_s}")
+            totals_s: pd.Series = pd.DataFrame(totals_d).T.sum()
+            self.logger.info(f"TOTALS: {totals_s.values}")
             # TODO: check that dims are correct here and implement normalizing and as_series options
             if normalize:
                 totals_s = totals_s / totals_s.sum()
-                self.logger.info(f"Normed rate: {totals_s}")
+                self.logger.info(f"Normed rate: {totals_s.values}")
                     
 
             part_target_rate_d[part] = totals_s if as_series else totals_s.values
@@ -1163,7 +1169,9 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
     
     def get_target_weights(self) -> np.ndarray:
         rates = self.get_target_rates()['train']
-        return 1. / rates
+        #return 1. / rates
+        weights =  1. / rates
+        return weights / max(weights)
 
     def get_member_model_output_shape(self) -> Tuple:
         member_model = next(iter(self.shadow_model_map.values()))
@@ -1639,7 +1647,19 @@ class InfoLeakageExperiment(bxp.Experiment):
             self.result_model = MultiChannelAttacker(**self.model_kws)
         else:
             #attack_arr_shape = T * C
-            attack_arr_shape = 2 if self.task.model_output_key == 'bce_loss' else T * C 
+            #attack_arr_shape = 2 if self.task.model_output_key == 'bce_loss' else T * C 
+            #attack_arr_shape = 968 if self.task.model_output_key == 'bce_loss' else T * C 
+            #attack_arr_shape = 962 if self.task.model_output_key == 'bce_loss' else T * C 
+            #attack_arr_shape = 1922 if self.task.model_output_key == 'bce_loss' else T * C 
+            #attack_arr_shape = 1928 if self.task.model_output_key == 'bce_loss' else T * C 
+            #attack_arr_shape = 1931 if self.task.model_output_key == 'bce_loss' else T * C 
+            #attack_arr_shape = 1925 if self.task.model_output_key == 'bce_loss' else T * C 
+            #attack_arr_shape = 1926 if self.task.model_output_key == 'bce_loss' else T * C 
+            #attack_arr_shape = 6 if 'bce_loss' in self.task.model_output_key else T * C 
+            #attack_arr_shape = 3 if 'bce_loss' in self.task.model_output_key else T * C 
+            #attack_arr_shape = 10 if 'bce_loss' in self.task.model_output_key else T * C 
+            #attack_arr_shape = 42 if 'bce_loss' in self.task.model_output_key else T * C 
+            attack_arr_shape = 612 if 'bce_loss' in self.task.model_output_key else T * C 
             self.model_kws = dict(
                 input_size=attack_arr_shape,
                 outputs=num_classes,
@@ -1796,8 +1816,15 @@ class InfoLeakageExperiment(bxp.Experiment):
             )
             print(output_clf_report_map[part_name])
 
+            preds_label_s = preds_df.idxmax(axis=1)
             output_performance_map[part_name] = utils.multiclass_performance(
-                y_label_s, preds_df.idxmax(axis=1)
+                y_label_s, preds_label_s
+            )
+            output_performance_map[part_name + '_weighted'] = utils.multiclass_performance(
+                y_label_s, preds_label_s, average='weighted'
+            )
+            output_performance_map[part_name + '_macro'] = utils.multiclass_performance(
+                y_label_s, preds_label_s, average='macro'
             )
         logger.info(output_performance_map)
 
@@ -1811,14 +1838,14 @@ class InfoLeakageExperiment(bxp.Experiment):
     def run(self):
         self.initialize()
         if self.task_dataset_dir is not None:
-            self.persist_task_dataset()
+            self.persist_task_dataset(output_keys=('target_arr', self.task.model_output_key)).keys_to_output
             return
 
         self.train()
         self.eval()
         self.save()
 
-    def persist_task_dataset(self):
+    def persist_task_dataset(self, output_keys = None):
         Path(self.task_dataset_dir).mkdir(parents=True, exist_ok=True)
         for part_name, part_dl in self.eval_dl_map.items():
             part_p = os.path.join(self.task_dataset_dir, part_name)
@@ -1828,7 +1855,10 @@ class InfoLeakageExperiment(bxp.Experiment):
             ):
                 batch_p = os.path.join(part_p, f"{batch_i}.pkl")
                 with open(file=batch_p, mode="wb") as f:
-                    pickle.dump(batch_d, f)
+                    if output_keys is None:
+                        pickle.dump(batch_d, f)
+                    else:
+                        pickle.dump({k:batch_d[k] for k in output_keys}, f)
 
     def save(self):
         #####

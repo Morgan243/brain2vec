@@ -2,7 +2,7 @@ import pandas as pd
 from mmz.utils import get_logger
 from dataclasses import dataclass, field
 from simple_parsing.helpers import JsonSerializable
-from typing import Optional, Dict, Union
+from typing import Optional, Dict, Union, List
 import numpy as np
 from copy import deepcopy
 
@@ -11,6 +11,7 @@ from brain2vec.experiments.pretrain import (
     SemisupervisedCodebookTaskOptions,
 )
 from brain2vec.experiments.info_leakage_eval import InfoLeakageExperiment
+from brain2vec.experiments.fine_tune import FineTuningExperiment
 from brain2vec.datasets.harvard_sentences import (
     HarvardSentencesDatasetOptions,
     HarvardSentences,
@@ -39,7 +40,9 @@ class BaseExperimentGrid(JsonSerializable):
     experiment_base_instance: Union[
         InfoLeakageExperiment, SemiSupervisedExperiment
     ] = subgroups(
-        {"info_leakage": InfoLeakageExperiment, "pretrain": SemiSupervisedExperiment},
+        {"info_leakage": InfoLeakageExperiment,
+         "pretrain": SemiSupervisedExperiment,
+         },
         default="pretrain",
     )
 
@@ -50,6 +53,7 @@ class BaseExperimentGrid(JsonSerializable):
     this_split: int = 0
     sample_tuples_for: Optional[str] = None
     sample_choose_n: Optional[int] = None
+    sample_to_skip: Optional[str] = None
 
     def __post_init__(self):
         if self.experiment_component_grids_str is None:
@@ -58,7 +62,11 @@ class BaseExperimentGrid(JsonSerializable):
         self.experiment_component_grids_d = eval(self.experiment_component_grids_str)
 
         if self.sample_tuples_for is not None:
-            tuple_sets = self.generate_sets(self.sample_choose_n, all_patient_set_strs)
+            if self.sample_to_skip is not None:
+                if isinstance(self.sample_to_skip, str):
+                    self.sample_to_skip = [w.strip() for w in self.sample_to_skip.split(',')]
+            tuple_sets = self.generate_sets(self.sample_choose_n, all_patient_set_strs,
+                                            cli_params_to_skip=self.sample_to_skip)
 
             logger.info(
                 f"task.dataset.{self.sample_tuples_for} set to (N={len(tuple_sets)}) {tuple_sets}"
@@ -81,7 +89,11 @@ class BaseExperimentGrid(JsonSerializable):
         for trial in ParameterGrid(self.experiment_component_grids_d):
             exp = deepcopy(self.experiment_base_instance)
             for attr_k, attr_v in trial.items():
-                exp = exp.set_recursive_dot_attribute(attr_k, attr_v)
+                try:
+                    exp = exp.set_recursive_dot_attribute(attr_k, attr_v)
+                except AssertionError as e:
+                    print(f"FAILED trying to set {attr_k} to {attr_v} on {exp}")
+                    raise
 
                 def _gettr(_exp, _attr_k=attr_k):
                     return _exp.get_recursive_dot_attribute(_attr_k)
@@ -91,9 +103,11 @@ class BaseExperimentGrid(JsonSerializable):
             self.experiment_grid_l.append(exp)
 
     @staticmethod
-    def generate_sets(choose, input_sets):
+    def generate_sets(choose, input_sets, cli_params_to_skip: Optional[List[str]] = None):
         all_combos = list(combinations(input_sets, choose))
         all_combo_cli_params = [",".join(s) for s in all_combos]
+        if cli_params_to_skip is not None:
+            all_combo_cli_params = [s for s in all_combo_cli_params if s not in cli_params_to_skip]
         return all_combo_cli_params
 
     @staticmethod
@@ -117,17 +131,32 @@ class BaseExperimentGrid(JsonSerializable):
             for attr_dot_k, gettr_f in experiments_gettr_d.items():
                 col = attr_dot_k.split(".")[-1]
                 expers_val = gettr_f(exper)
-                try:
-                    _m = results_options_df[col].eq(
-                        # gettr_f(exper)
-                        expers_val
-                    )
-                except KeyError as e:
-                    print(
-                        f"{col} extracted from {attr_dot_k} no in results_options_df cols: {results_options_df.columns.tolist()}"
-                    )
-                    raise e
-                logger.info(f"{_m.sum()} have {attr_dot_k} equal to {expers_val}")
+
+                if col == 'result_file':
+                    pretrained_results_df = results_options_df.pretrained_results.apply(pd.Series)
+                    pretrained_results_df['result_filename'] = pretrained_results_df.path.map(lambda s: os.path.split(s)[-1])
+                    this_result_filename = os.path.split(expers_val)[-1]
+                    logger.info("Checking result files for: " + this_result_filename)
+                    _m = pretrained_results_df['result_filename'].eq(this_result_filename)
+                    logger.info("Result filenames: " + (", ".join(sorted(pretrained_results_df.result_filename.unique()))))
+                    logger.info(f"Result matching: {_m.sum()}")
+                    #_m = pd.Series(True, index=results_options_df.index)
+                    #logger.info(f"Result File path is passthrough")
+                elif col == 'model_base_path':
+                    _m = pd.Series(True, index=results_options_df.index)
+                    logger.info(f"Model base path is passthrough")
+                else:
+                    try:
+                        _m = results_options_df[col].eq(
+                            # gettr_f(exper)
+                            expers_val
+                        )
+                    except KeyError as e:
+                        print(
+                            f"{col} extracted from {attr_dot_k} no in results_options_df cols: {results_options_df.columns.tolist()}"
+                        )
+                        raise e
+                    logger.info(f"{_m.sum()} have {attr_dot_k} equal to {expers_val}")
                 m = m & _m
             if m.any():
                 filtered_experiments_l.append(exper)
@@ -208,6 +237,8 @@ class BaseExperimentGrid(JsonSerializable):
                 f"filtering {len(already_exists)} "
                 f"completed in {self.existing_results_dir}"
             )
+            to_run_str = '\n'.join(map(str, set_of_sets_to_run))
+            #logger.info(f"Sets to run: {to_run_str}")
         else:
             logger.info(
                 "existing_results_dir not provided, not filtering based on prior results"

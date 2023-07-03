@@ -22,6 +22,9 @@ from brain2vec import datasets
 from brain2vec import models as base
 bmp = base
 from mmz.models import base_fine_tuners as base_ft
+import mmz
+#t = mmz.models.GaussianNoise()
+t = mmz.models.GaussianNoise(.1)
 
 from brain2vec.models import Trainer
 from torchaudio.models.wav2vec2.components import _compute_mask_indices
@@ -146,6 +149,8 @@ class Brain2Vec(torch.nn.Module):
                  feature_extractor_mode='default',
                  context_encoder_dropout=0.,
                  ras_pos_encoding=True, temporal_pos_encoding=True,
+                 ras_regularizer=None,
+                 ras_noise=0,
                  positional_encoding_method='combined',
                  squeeze_first=False):
         super().__init__()
@@ -160,6 +165,8 @@ class Brain2Vec(torch.nn.Module):
 
         self.mask_length, self.mask_prob = mask_length, mask_prob
         self.positional_encoding_method = positional_encoding_method
+        self.ras_regularizer = ras_regularizer
+        self.ras_noise = ras_noise
 
         # TODO: Don't assign test data as attribute? But it's so useful
         self.t_x = torch.rand((16, *self.input_shape))
@@ -243,8 +250,7 @@ class Brain2Vec(torch.nn.Module):
         #self.combined_enc = None
         if self.positional_encoding_method == 'combined':
 
-            #nn.init.kaiming_normal_(conv.weight)
-            self.ras_positional_enc = torch.nn.Sequential(
+            l = [
                 # Dimensions of RAS are [-128, 128] (?)
                 # bmp.ScaleByConstant(128.),
                 torch.nn.Linear(3, 32),
@@ -252,23 +258,35 @@ class Brain2Vec(torch.nn.Module):
                 torch.nn.Linear(32, 32),
                 torch.nn.LeakyReLU(),
                 torch.nn.Linear(32, self.C * self.T),
-                #torch.nn.Linear(32, self.C),
+                # torch.nn.Linear(32, self.C),
                 torch.nn.LeakyReLU()
+            ]
+            if self.ras_noise > 0:
+                l = [mmz.models.GaussianNoise(self.ras_noise)] + l
+
+            #nn.init.kaiming_normal_(conv.weight)
+            self.ras_positional_enc = torch.nn.Sequential(
+                *l
             )
             self.ras_positional_enc.apply(bmp.weights_init)
             self.positional_enc = None
 
         elif self.ras_pos_encoding:
-            self.ras_positional_enc = torch.nn.Sequential(
+            l = [
                 # Dimensions of RAS are [-128, 128] (?)
-                #bmp.ScaleByConstant(128.),
+                # bmp.ScaleByConstant(128.),
                 torch.nn.Linear(3, 32),
                 torch.nn.LeakyReLU(),
                 torch.nn.Linear(32, 32),
                 torch.nn.LeakyReLU(),
-                #torch.nn.Linear(32, self.C * self.T),
+                # torch.nn.Linear(32, self.C * self.T),
                 torch.nn.Linear(32, self.C),
                 torch.nn.LeakyReLU()
+            ]
+            if self.ras_noise > 0:
+                l = [mmz.models.GaussianNoise(self.ras_noise)] + l
+            self.ras_positional_enc = torch.nn.Sequential(
+                *l
             )
             self.ras_positional_enc.apply(bmp.weights_init)
             self.positional_enc = None
@@ -435,15 +453,54 @@ class Brain2Vec(torch.nn.Module):
 
     def forward(self, X, features_only=False, mask=True, output_loss=False):
         if output_loss: 
-            out_d = self._forward(X, features_only=False, mask=True)
-            loss_d = Brain2VecTrainer._loss(out_d, cross_entropy_reduction='none')
-            out_d.update(loss_d)
-            out_d['bce_loss'] = out_d['bce_loss'].reshape(X['signal_arr'].shape[0], -1)
+            #self.mask_length = 6
+            bs = X['signal_arr'].shape[0]
+            # Mask everything
+            mask_indices = torch.ones((bs, self.T), dtype=torch.bool)
+            #mask_indices[:, (self.T // 2):] = False
+            mask_indices[:, 1:] = False
+
+            bce_losses_l = list()
+            preds_l = list()
+            #   bce_for_attacker = None
+            for i in range(6):
+                out_d = self._forward(X, features_only=False, mask=True, mask_indices=mask_indices.roll(i, 1))
+                loss_d = Brain2VecTrainer._loss(out_d, cross_entropy_reduction='none')
+                bce_losses_l.append(loss_d['bce_loss'].reshape(bs, -1))
+                preds_l.append(out_d['preds'].permute(1, 0, 2).squeeze())
+                #out_d.update(loss_d)
+                #out_d['bce_loss_orig'] = out_d['bce_loss'].reshape(bs, -1)
+
+            bce_for_attacker = torch.concat(bce_losses_l, dim=1)
+            preds_for_attacker = torch.concat(preds_l, dim=1)
+
+            #input_q, input_q_ix = self.quantizer.forward_idx(out_d['unmasked_features'])
+            
+            # Shift the second group up by num vars so they are unique indicators
+            #input_q_ix[:, :, 1] = input_q_ix[:, :, 1] + self.quantizer.num_vars
+            #onehot_q_ix = torch.nn.functional.one_hot(input_q_ix.reshape(bs,-1), 
+            #                                          self.quantizer.groups * self.quantizer.num_vars)
+
+            #device = X['signal_arr'].device
+            out_d['bce_loss'] = torch.concat([
+                torch.log((
+                    (bce_for_attacker / 100) + 0.000001
+                           ).detach()),
+                preds_for_attacker.detach(),
+                #self.mask_embedding.expand(bs, self.mask_embedding.shape[0])
+
+                ], dim=1)
+            #out_d['bce_loss_plus'] = torch.concat([
+            #out_d['bce_loss'] = torch.concat([
+            #    (out_d['bce_loss_orig'].detach().to(device) / 100) - 2, 
+            #    #out_d['mask_indices'].detach().reshape(bs, -1).float().to(device),
+            #    #onehot_q_ix.reshape(bs, -1).detach().to(device)
+            #    ], dim=1)
             return out_d
         else:
             return self._forward(X, features_only=features_only, mask=mask)
     
-    def _forward(self, X, features_only=False, mask=True):
+    def _forward(self, X, features_only=False, mask=True, mask_indices=None):
         input_d = dict()
         if isinstance(X, dict):
             input_d = X
@@ -467,8 +524,9 @@ class Brain2Vec(torch.nn.Module):
 
         if mask:
             # Create the mask - what will be hidden from the context model
-            mask_indices = _compute_mask_indices((B, T), padding_mask=None, mask_prob=self.mask_prob,
-                                                 mask_length=self.mask_length, min_masks=1)
+            if mask_indices is None:
+                mask_indices = _compute_mask_indices((B, T), padding_mask=None, mask_prob=self.mask_prob,
+                                                     mask_length=self.mask_length, min_masks=1)
 
             # Create inverse of mask to select unmasked values
             #umask_ixes = ~mask_indices
@@ -632,12 +690,14 @@ class Brain2Vec(torch.nn.Module):
 class MultiChannelBrain2Vec(torch.nn.Module):
     def __init__(self, input_shape, c2v_m: Brain2Vec, hidden_encoder='linear',
                  dropout=0., batch_norm=False, linear_hidden_n=16, n_layers=2,
+                 dropout_2d=0.,
                  outputs=1):
         super().__init__()
         self.input_shape = input_shape
         self.c2v_m = c2v_m
         self.outputs = outputs
         self.dropout_rate = dropout
+        self.dropout_2d_rate = dropout_2d
         self.batch_norm = batch_norm
 
         self.mc_from_1d = base_ft.MultiChannelFromSingleChannel(self.input_shape, self.c2v_m)
@@ -646,6 +706,9 @@ class MultiChannelBrain2Vec(torch.nn.Module):
         self.T, self.C = self.c2v_m.T, self.c2v_m.C
         self.h_dim = self.S * self.C
 
+        self.dropout_2d = None
+        if self.dropout_2d_rate > 0:
+            self.dropout_2d = torch.nn.Dropout2d(p=self.dropout_2d_rate)
 
         #B, T, S, C = output_arr.shape
 
@@ -712,6 +775,8 @@ class MultiChannelBrain2Vec(torch.nn.Module):
     def forward(self, input_d: dict):
         feat_d = self.mc_from_1d(input_d)
         feat_arr = feat_d['output']
+        if self.dropout_2d is not None:
+            feat_arr = self.dropout_2d(feat_arr.permute(0, 2, 1, 3))
 
         B = feat_arr.shape[0]
 
@@ -1013,6 +1078,7 @@ class Brain2VecOptions(bmp.ModelOptions):
     feature_extractor_layers: str = '[(128, 7, 2)] + [(64, 3, 2)] * 2 + [(32, 3, 2)] * 2'
     feature_extractor_mode: str = 'layer_norm'
     ras_pos_encoding: bool = True
+    ras_noise: float = 0.
     positional_encoding_method: str = 'combined'
     squeeze_first: bool = True
 
@@ -1032,7 +1098,8 @@ class Brain2VecOptions(bmp.ModelOptions):
             encoder_dim_feedforward=self.encoder_dim_feedforward,
             quant_num_vars=self.quant_num_vars, quant_num_groups=self.quant_num_groups,
             feature_extractor_layers=self.feature_extractor_layers,
-            positional_encoding_method=self.positional_encoding_method
+            positional_encoding_method=self.positional_encoding_method,
+            ras_noise=self.ras_noise
         )
 
     def make_model(self, dataset: Optional[datasets.BaseDataset],

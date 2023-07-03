@@ -5,15 +5,48 @@ from mmz import models as bmm
 from brain2vec import datasets
 from brain2vec.datasets import harvard_sentences, northwestern_words
 from brain2vec.models import brain2vec
-from brain2vec.experiments import load_results_to_frame
+from brain2vec.experiments import load_results_to_frame, ResultParsingOptions
 
 from simple_parsing import ArgumentParser, choice, subgroups
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Optional
 import torch
+from brain2vec.experiments.fine_tune import FineTuneResultParsingOptions
+from dataclasses import dataclass, make_dataclass
 
 logger = utils.get_logger('semi_supervised')
+
+from typing import Union, List, ClassVar, Dict
+
+@dataclass
+class FineTuneResultParsingOptions(ResultParsingOptions):
+    result_file: Optional[Union[str, List[str]]] = None
+    print_results: Optional[bool] = False
+
+    shapes_d: ClassVar[Dict[tuple,tuple]] = {
+        ('UCSD', 4, 1, 1): (525000, 90),
+        ('UCSD', 5, 1, 1): (425001, 70),
+        ('UCSD', 10, 1, 1): (455000, 80),
+        ('UCSD', 18, 1, 1): (450000, 175),
+        ('UCSD', 19, 1, 1): (580000, 232),
+        ('UCSD', 22, 1, 1): (490000, 94),
+        ('UCSD', 28, 1, 1): (450001, 108)
+    }
+
+    n_sensors_d: ClassVar[Dict[str, int]] = {f"{k[0]}-{k[1]}": v[1] for k, v in shapes_d.items()}
+
+    all_tuples: ClassVar[List] = harvard_sentences.HarvardSentences.make_tuples_from_sets_str('*')
+    all_set_strs: ClassVar[set] = {f"{t[0]}-{t[1]}" for t in all_tuples}
+    pt_str_to_pub_id: ClassVar[Dict[str, int]] = {f"{t[0]}-{t[1]}": ii + 1 for ii, t in enumerate(sorted(all_tuples))}
+
+    ParsedResults: ClassVar = make_dataclass("ParsedResults",
+                                             ['result_options_df',
+                                              'pretrain_exper_df',
+                                              'mean_train_acc_ctab',
+                                              'mean_cv_acc_ctab',
+                                              'mean_test_acc_ctab'])
+
 
 
 @dataclass

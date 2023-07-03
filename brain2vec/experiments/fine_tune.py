@@ -8,7 +8,7 @@ from os.path import join as pjoin
 import matplotlib.pyplot
 import sklearn.linear_model
 import torch
-from typing import List, Optional
+from typing import List, Optional, Dict, ClassVar
 from tqdm.auto import tqdm
 import numpy as np
 import pandas as pd
@@ -24,7 +24,7 @@ from mmz import models as zm
 from brain2vec import models as bmp
 from brain2vec import datasets
 from brain2vec import experiments
-from dataclasses import dataclass
+from dataclasses import dataclass, make_dataclass
 from brain2vec.models import base_fine_tuners as ft_models
 import json
 from simple_parsing import subgroups
@@ -38,10 +38,220 @@ logger = utils.get_logger(__name__)
 
 # Override to make the result parsing options optional in this script
 @dataclass
-class TransferLearningResultParsingOptions(experiments.ResultParsingOptions):
-    result_file: Optional[str] = None
+class FineTuneResultParsingOptions(experiments.ResultParsingOptions):
+    result_file: Optional[Union[str, List[str]]] = None
     print_results: Optional[bool] = False
 
+    # - Fine Tune specific static attrs -
+    task_pub_d: ClassVar[Dict[str, str]] = {'word_classification_fine_tuning': 'Word Classification',
+                                            'speech_classification_fine_tuning': 'Speech Activity Detection',
+                                            'region_classification_fine_tuning': 'Speech-related Behavior Recognition'}
+
+    task_pub_fmt_d: ClassVar[Dict[str, str]] = {'word_classification_fine_tuning': 'Word\nClassification',
+                                                'speech_classification_fine_tuning': 'Speech Activity\nDetection',
+                                                'region_classification_fine_tuning': 'Speech-related\nBehavior Recognition'}
+
+    task_pub_fmt_rev_d: ClassVar[Dict[str, str]] = {v: k for k, v in task_pub_fmt_d.items()}
+
+    task_pub_fmt_short_d: ClassVar[Dict[str, str]] = {'word_classification_fine_tuning': 'Word',
+                                                      'speech_classification_fine_tuning': 'Speech',
+                                                      'region_classification_fine_tuning': 'Behavior'}
+
+
+    task_rate_d: ClassVar[Dict[str, float]] = {'word_classification_fine_tuning': .1,
+                                             'speech_classification_fine_tuning': .5,
+                                             'region_classification_fine_tuning': .25}
+    shapes_d: ClassVar[Dict[tuple,tuple]] = {
+        ('UCSD', 4, 1, 1): (525000, 90),
+        ('UCSD', 5, 1, 1): (425001, 70),
+        ('UCSD', 10, 1, 1): (455000, 80),
+        ('UCSD', 18, 1, 1): (450000, 175),
+        ('UCSD', 19, 1, 1): (580000, 232),
+        ('UCSD', 22, 1, 1): (490000, 94),
+        ('UCSD', 28, 1, 1): (450001, 108)
+    }
+
+    n_sensors_d: ClassVar[Dict[str, int]] = {f"{k[0]}-{k[1]}": v[1] for k, v in shapes_d.items()}
+
+    all_tuples: ClassVar[List] = HarvardSentences.make_tuples_from_sets_str('*')
+    all_set_strs: ClassVar[set] = {f"{t[0]}-{t[1]}" for t in all_tuples}
+    pt_str_to_pub_id: ClassVar[Dict[str, int]] = {f"{t[0]}-{t[1]}": ii + 1 for ii, t in enumerate(sorted(all_tuples))}
+
+    ParsedResults: ClassVar = make_dataclass("ParsedResults",
+                                                 ['result_options_df',
+                                                  'pretrain_exper_df',
+                                                  'mean_train_acc_ctab',
+                                                  'mean_cv_acc_ctab',
+                                                  'mean_test_acc_ctab'])
+    def __post_init__(self):
+        results_df = experiments.load_results_to_frame(
+            self.result_file
+        )
+
+        # result_options_df, pretrain_exper_df, mean_train_acc_ctab, mean_cv_acc_ctab, mean_test_acc_ctab = FineTuneResultParsingOptions.preprocess_results_frame(results_df)
+        self.parsed_results = self.preprocess_results_frame(results_df)
+        print(self.parsed_results.result_options_df['task_name_pub_fmt_short'].value_counts())
+
+    @classmethod
+    def preprocess_results_frame(cls, results_df, results_filter_query=None):
+        result_options_df = experiments.upack_result_options_to_columns(results_df, parse_cv_and_epoch_results=False)
+        if results_filter_query is not None:
+            result_options_df = result_options_df.query(results_filter_query)
+
+        def parse_perf_col(ro_df, col):
+            _perf_df = result_options_df[col].apply(pd.Series)
+            _perf_df.columns = f'{col}_' + _perf_df.columns
+            return _perf_df
+
+        perf_df_map = dict(train=parse_perf_col(result_options_df, 'train'),
+                           cv=parse_perf_col(result_options_df, 'cv'),
+                           test=parse_perf_col(result_options_df, 'test'))
+
+        result_options_df = result_options_df.join(
+            perf_df_map.values()
+        )
+
+        result_options_df['task_name_pub'] = result_options_df.task_name.map(cls.task_pub_d)
+        result_options_df['task_name_pub_fmt'] = result_options_df.task_name.map(cls.task_pub_fmt_d)
+        result_options_df['task_name_pub_fmt_short'] = result_options_df.task_name.map(cls.task_pub_fmt_short_d)
+        print("Adding short form task name")
+        print(result_options_df['task_name_pub_fmt_short'].value_counts())
+
+        def map_sensor_count_columns_to_set_str(pt_set_str_s):
+            out_d = dict()
+            out_d['num_sensors'] = pt_set_str_s.map(cls.n_sensors_d)
+            out_d['more_than_sensors'] = out_d['num_sensors'].ge(100).map(
+                {False: '$<$ 100 Sensors', True: '$\geq$ 100 Sensors'})
+            out_d['num_sensor_cat'] = out_d['num_sensors'].pipe(pd.cut, bins=[70, 93, 105, 235],
+                                                                labels=['small', 'med', 'large'], right=False)
+            df = pd.DataFrame(out_d)
+            df.columns = pt_set_str_s.name + '_' + df.columns
+            return df
+
+        train_set_size_df = map_sensor_count_columns_to_set_str(result_options_df.train_sets)
+        result_options_df = result_options_df.join(train_set_size_df)
+
+        result_options_df['train_cv_delta'] = result_options_df.cv_accuracy - result_options_df.train_accuracy
+        # - Parse out pretrained results -
+        pretrained_results_df = result_options_df.pretrained_results.apply(pd.Series)
+
+        (pretrained_results_df,
+         pretrained_cv_results_df,
+         pretrained_epoch_results_df) = experiments.upack_result_options_to_columns(
+            pretrained_results_df,
+            parse_cv_and_epoch_results=True)
+        result_options_df['pretrain_name'] = pretrained_results_df['name']
+        result_options_df['pretrained_quant_num_vars'] = pretrained_results_df['quant_num_vars']
+        result_options_df['pretrained_n_encoder_layers'] = pretrained_results_df['n_encoder_layers']
+        result_options_df['ras_pos_encoding'] = pretrained_results_df['ras_pos_encoding']
+        result_options_df['positional_encoding_method'] = pretrained_results_df['positional_encoding_method']
+
+        result_options_df['pretrain_sets'] = pretrained_results_df.train_sets
+        result_options_df['pretrain_n_sets'] = result_options_df.pretrain_sets.str.split(',').map(len)
+        result_options_df['Fine Tuning Pt.'] = result_options_df.train_sets.map(cls.pt_str_to_pub_id)
+        pretrain_set_size_df = map_sensor_count_columns_to_set_str(result_options_df.pretrain_sets)
+        result_options_df = result_options_df.join(pretrain_set_size_df)
+        print(result_options_df['task_name_pub_fmt_short'].value_counts())
+
+        pretrained_results_df['Large SSL'] = pretrained_results_df.eval("quant_num_vars == 160 and n_encoder_layers== 8")
+        pretrained_results_df['Medium SSL'] = pretrained_results_df.eval("quant_num_vars == 20 and n_encoder_layers== 8")
+        pretrained_results_df['Small SSL'] = pretrained_results_df.eval("quant_num_vars == 10 and n_encoder_layers== 4")
+        ssl_types = ['Small SSL', 'Medium SSL', 'Large SSL', ]
+        result_options_df['SSL Type'] = pretrained_results_df[
+            ssl_types
+        ].idxmax(axis=1).astype(pd.CategoricalDtype(categories=ssl_types))
+
+        #pretrained_results_df['SSL Type'] = (
+        #    pretrained_results_df.eval("quant_num_vars == 160 and n_encoder_layers== 8")
+        #    .replace({True: "Large SSL", False: "Small SSL"}))
+        #result_options_df['SSL Type'] = pretrained_results_df['SSL Type']
+
+        #ctab_cols = ['SSL Type', 'task_name', 'train_sets']
+        test_sets_s = result_options_df.pretrain_sets.str.split(',').map(set).apply(lambda s: cls.all_set_strs - s)
+        test_sizes = test_sets_s.map(len)
+        result_options_df['pretrain_n_holdout_sets'] = test_sizes
+
+        for test_s in test_sizes.unique():
+            test_s_m = result_options_df['pretrain_n_holdout_sets'].eq(test_s)
+            m_test_sets_s = test_sets_s[test_s_m]
+            # 6 pair has holdout of 1
+            if test_s == 1:
+                #assert test_sets_s.map(len).max() == 1
+                result_options_df.loc[
+                    test_s_m,
+                    'pretraining_holdout_pub_id'] = m_test_sets_s.explode().map(cls.pt_str_to_pub_id)
+                #ctab_cols.append('pretraining_holdout_pub_id')
+
+                result_options_df.loc[
+                    test_s_m,
+                    'Pretraining Pts.'] = result_options_df.loc[test_s_m].pretrain_sets.map(
+                    lambda s: ", ".join(str(pub_id) for pt_str, pub_id in cls.pt_str_to_pub_id.items() if pt_str in s)
+                )
+
+                #result_options_df['pt_transfer_type'] = result_options_df.eval('train_sets == pretrain_sets').replace(
+                #    {True: "Same Pt.", False: "Different Pt."})
+                result_options_df.loc[
+                    test_s_m,
+                    'pt_transfer_type'] = result_options_df.loc[test_s_m].apply(
+                    lambda r: r.train_sets in r.pretrain_sets,
+                    axis=1).replace({True: "Same Pt.", False: "Different Pt."})
+
+                result_options_df.loc[
+                    test_s_m,
+                    'Transfer Type'] = (
+                        result_options_df.loc[test_s_m].pretraining_holdout_pub_id == result_options_df.loc[
+                    test_s_m, 'Fine Tuning Pt.'
+                ]).map(
+                    {True: 'Non-Pretrain Pt.', False: 'Pretrain Pt.'}
+                )
+            # 1 pair has holdout of 6
+            elif test_s == 6:
+                result_options_df.loc[
+                    test_s_m,
+                    'pretraining_holdout_pub_id'] = m_test_sets_s.map(lambda l: ", ".join(str(cls.pt_str_to_pub_id[_l]) for _l in l))#.explode().map(cls.pt_str_to_pub_id)
+                result_options_df.loc[
+                    test_s_m,
+                    'Pretraining Pt.'] = result_options_df.loc[test_s_m].pretrain_sets.map(cls.pt_str_to_pub_id)
+                #ctab_cols.append('Pretraining Pt.')
+
+
+                result_options_df.loc[test_s_m, 'pt_transfer_type'] = result_options_df.loc[test_s_m].apply(
+                    lambda r: r.train_sets in r.pretrain_sets,
+                    axis=1).replace({True: "Same Pt.", False: "Different Pt."})
+                #result_options_df['pt_transfer_type'] = result_options_df.eval('train_sets in pretrain_sets').replace(
+                #    {True: "Same Pt.", False: "Different Pt."})
+            else:
+                raise ValueError(f"test_s  is {test_s}")
+
+        #mean_test_acc_ctab = result_options_df.groupby(ctab_cols).test_accuracy.mean().unstack().round(2).T
+        #mean_cv_acc_ctab = result_options_df.groupby(ctab_cols).cv_accuracy.mean().unstack().round(2).T
+        #mean_train_acc_ctab = result_options_df.groupby(ctab_cols).train_accuracy.mean().unstack().round(2).T
+
+        mean_pretrain_cv_loss_s = pretrained_cv_results_df.assign(
+            total_loss=pretrained_cv_results_df.eval("bce_loss+perplexity+feature_pen")
+        ).groupby('experiment_name').total_loss.mean()
+
+        pretrain_exper_df = pd.concat([
+            result_options_df.groupby('pretrain_name').pretrain_sets_more_than_sensors.unique().explode(),
+            result_options_df.groupby('pretrain_name').pretrain_sets_num_sensor_cat.unique().explode(),
+            mean_pretrain_cv_loss_s.rename('pretrain_cv_loss')
+        ],
+            axis=1)
+        print(result_options_df['task_name_pub_fmt_short'].value_counts())
+
+
+        #pretrain_set_size_df.columns
+        return cls.ParsedResults(result_options_df, pretrain_exper_df,
+                                 None, None, None
+                                 #mean_train_acc_ctab, mean_cv_acc_ctab, mean_test_acc_ctab
+                                 )
+
+    @classmethod
+    def from_results_paths(cls, paths):
+        o = cls(paths)
+        #print("LAST VALUE COUNTS")
+        #print(o.parsed_results.result_options_df['task_name_pub_fmt_short'].value_counts())
+        return o
 
 @dataclass
 class SpeechDetectionFineTuningTask(bxp.TaskOptions):
@@ -167,9 +377,9 @@ class PretrainParticipantIdentificationFineTuningTask(RegionDetectionFineTuningT
 class WordDetectionFineTuningTask(bxp.TaskOptions):
     task_name: str = "word_classification_fine_tuning"
     dataset: datasets.DatasetOptions = HarvardSentencesDatasetOptions(train_sets='AUTO-REMAINING',
-                                                                               flatten_sensors_to_samples=False,
-                                                                               pre_processing_pipeline='word_classification',
-                                                                               split_cv_from_test=True)
+                                                                      flatten_sensors_to_samples=False,
+                                                                      pre_processing_pipeline='word_classification',
+                                                                      split_cv_from_test=True)
     method: str = '2d_linear'
 
     squeeze_target: ClassVar[bool] = True
@@ -204,6 +414,7 @@ class FineTuningModel(bmp.DNNModelOptions):
     freeze_pretrained_weights: bool = True
     linear_hidden_n: int = 16
     n_layers: int = 1
+    dropout_2d_rate: float = 0.
 
     classifier_head: Optional[Union[torch.nn.Module, str]] = None
 
@@ -261,10 +472,11 @@ class FineTuningModel(bmp.DNNModelOptions):
 
             hidden_enc = 'transformer' if self.fine_tuning_method == '2d_transformers' else 'linear'
             ft_model = MultiChannelBrain2Vec((n_pretrained_input_channels, n_pretrained_input_samples),
-                                                             pretrained_model, outputs=fine_tuning_target_shape,
-                                                             hidden_encoder=hidden_enc,
-                                                             dropout=self.dropout, batch_norm=self.batch_norm,
-                                                             linear_hidden_n=self.linear_hidden_n, n_layers=self.n_layers)
+                                             pretrained_model, outputs=fine_tuning_target_shape,
+                                             hidden_encoder=hidden_enc,
+                                             dropout=self.dropout, batch_norm=self.batch_norm,
+                                             dropout_2d=self.dropout_2d_rate,
+                                             linear_hidden_n=self.linear_hidden_n, n_layers=self.n_layers)
         else:
             raise ValueError(f"Unknown ft_method '{self.fine_tuning_method}'")
 
@@ -285,6 +497,7 @@ class FineTuningExperiment(bxp.Experiment):
         #default=RegionDetectionFineTuningTask())
     model: FineTuningModel = FineTuningModel()
 
+    reinitialize_pretrain: bool = False
     inspection_plot_path: Optional[str] = None
     n_rs_clf_iter: Optional[int] = None
     rs_clf: Optional[str] = 'svm'
@@ -292,8 +505,9 @@ class FineTuningExperiment(bxp.Experiment):
 
     @classmethod
     def load_pretrained_model_results(cls,
-                              pretrained_result_input_path: str = None,
-                              pretrained_result_model_base_path: str = None):
+                                      pretrained_result_input_path: str = None,
+                                      pretrained_result_model_base_path: str = None,
+                                      load_weights: bool = True):
         #pretrained_result_model_base_path = pretrained_result_model_base_path if options is None else options.pretrained_result_model_base_path
         #pretrained_result_input_path = pretrained_result_input_path if options is None else options.pretrained_result_input_path
 
@@ -328,7 +542,8 @@ class FineTuningExperiment(bxp.Experiment):
         else:
             logger.info(f"Pretraining result didn't have a 'cv' to check the loss of ... D:")
 
-        pretrained_model = load_model_from_results(result_json, base_model_path=pretrained_result_model_base_path)
+        pretrained_model = load_model_from_results(result_json, base_model_path=pretrained_result_model_base_path,
+                                                   load_weights=load_weights)
 
         return pretrained_model, result_json
 
@@ -337,7 +552,11 @@ class FineTuningExperiment(bxp.Experiment):
         if not hasattr(self, 'pretrained_model'):
             self.pretrained_model, self.pretraining_results = self.load_pretrained_model_results(
                 self.pretrained_result_input.result_file,
-                self.pretrained_result_input.model_base_path)
+                self.pretrained_result_input.model_base_path,
+                # When not using a re-initialized model, load the weights
+                load_weights=not self.reinitialize_pretrain
+            )
+
         return self.pretrained_model, self.pretraining_results
 
     def make_fine_tuning_datasets_and_loaders(self, pretraining_sets=None):
@@ -348,8 +567,8 @@ class FineTuningExperiment(bxp.Experiment):
         unseen_sets = dataset_cls.make_remaining_tuples_from_selected(pretraining_sets)
 
         if self.task.dataset.train_sets == 'AUTO-REMAINING':
+            train_sets = self.auto_selected_train_sets = unseen_sets
             logger.info(f"AUTO-REMAINING: pretrained on {pretraining_sets}, so fine tuning on {train_sets}")
-            self.auto_selected_train_sets = unseen_sets
         # To use the same participant data that was used during pretraining
         elif self.task.dataset.train_sets == 'AUTO-PRETRAINING':
             train_sets = dataset_cls.make_tuples_from_sets_str(pretraining_sets)
@@ -357,6 +576,7 @@ class FineTuningExperiment(bxp.Experiment):
             self.auto_selected_train_sets = pretraining_sets
         else:
             logger.info(f"Will use specific pretraining: {self.task.dataset.train_sets}")
+            self.auto_selected_train_sets = self.task.dataset.train_sets
 
         # To use the remaining (holdout) participant data that was used during pretraining
 
@@ -448,7 +668,8 @@ class FineTuningExperiment(bxp.Experiment):
                                    for part_name, outputs_d in outputs_map.items()}
             else:
                 performance_map = {part_name: utils.multiclass_performance(outputs_d['actuals'],
-                                                                           outputs_d['preds'].argmax(1))
+                                                                           outputs_d['preds'].argmax(1),
+                                                                           average='weighted')
                                    for part_name, outputs_d in outputs_map.items()}
             print(performance_map)
 
