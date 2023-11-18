@@ -24,10 +24,11 @@ from mmz import models as zm
 from brain2vec import models as bmp
 from brain2vec import datasets
 from brain2vec import experiments
-from dataclasses import dataclass, make_dataclass
+from dataclasses import dataclass, make_dataclass, field
 from brain2vec.models import base_fine_tuners as ft_models
 import json
 from simple_parsing import subgroups
+from brain2vec import visuals as viz
 #from ecog_speech import result_parsing
 
 from brain2vec.datasets.harvard_sentences import HarvardSentencesDatasetOptions, HarvardSentences
@@ -41,6 +42,16 @@ logger = utils.get_logger(__name__)
 class FineTuneResultParsingOptions(experiments.ResultParsingOptions):
     result_file: Optional[Union[str, List[str]]] = None
     print_results: Optional[bool] = False
+
+    indicator_eval_d: Dict[str, str] = field(default_factory=lambda : {
+        'Large SSL': "quant_num_vars == 160 and n_encoder_layers== 8",
+        'Medium SSL': "quant_num_vars == 20 and n_encoder_layers== 8",
+        'Small SSL': "quant_num_vars == 10 and n_encoder_layers== 4",
+    })
+
+    #pretrained_results_df['Large SSL'] = pretrained_results_df.eval("quant_num_vars == 160 and n_encoder_layers== 8")
+    #pretrained_results_df['Medium SSL'] = pretrained_results_df.eval("quant_num_vars == 20 and n_encoder_layers== 8")
+    #pretrained_results_df['Small SSL'] = pretrained_results_df.eval("quant_num_vars == 10 and n_encoder_layers== 4")
 
     # - Fine Tune specific static attrs -
     task_pub_d: ClassVar[Dict[str, str]] = {'word_classification_fine_tuning': 'Word Classification',
@@ -80,6 +91,8 @@ class FineTuneResultParsingOptions(experiments.ResultParsingOptions):
     ParsedResults: ClassVar = make_dataclass("ParsedResults",
                                                  ['result_options_df',
                                                   'pretrain_exper_df',
+                                                  'pretrain_results_df',
+                                                  'opt_cols',
                                                   'mean_train_acc_ctab',
                                                   'mean_cv_acc_ctab',
                                                   'mean_test_acc_ctab'])
@@ -89,12 +102,27 @@ class FineTuneResultParsingOptions(experiments.ResultParsingOptions):
         )
 
         # result_options_df, pretrain_exper_df, mean_train_acc_ctab, mean_cv_acc_ctab, mean_test_acc_ctab = FineTuneResultParsingOptions.preprocess_results_frame(results_df)
-        self.parsed_results = self.preprocess_results_frame(results_df)
+        self.parsed_results = self.preprocess_results_frame(results_df, indicator_eval_d=self.indicator_eval_d)
         print(self.parsed_results.result_options_df['task_name_pub_fmt_short'].value_counts())
 
+
     @classmethod
-    def preprocess_results_frame(cls, results_df, results_filter_query=None):
-        result_options_df = experiments.upack_result_options_to_columns(results_df, parse_cv_and_epoch_results=False)
+    def map_sensor_count_columns_to_set_str(cls, pt_set_str_s):
+        out_d = dict()
+        out_d['num_sensors'] = pt_set_str_s.map(cls.n_sensors_d)
+        out_d['more_than_sensors'] = out_d['num_sensors'].ge(100).map(
+            {False: '$<$ 100 Sensors', True: '$\geq$ 100 Sensors'})
+        out_d['num_sensor_cat'] = out_d['num_sensors'].pipe(pd.cut, bins=[70, 93, 105, 235],
+                                                            labels=['small', 'med', 'large'], right=False)
+        df = pd.DataFrame(out_d)
+        df.columns = pt_set_str_s.name + '_' + df.columns
+        return df
+
+    @classmethod
+    def preprocess_results_frame(cls, results_df, results_filter_query=None,
+                                 indicator_eval_d:Optional[Dict[str, str]] = None):
+        result_options_df, opt_cols = experiments.upack_result_options_to_columns(results_df, parse_cv_and_epoch_results=False)
+        result_options_df['parent_dir'] = result_options_df.path.apply(lambda s: os.path.split(s)[0])
         if results_filter_query is not None:
             result_options_df = result_options_df.query(results_filter_query)
 
@@ -117,49 +145,224 @@ class FineTuneResultParsingOptions(experiments.ResultParsingOptions):
         print("Adding short form task name")
         print(result_options_df['task_name_pub_fmt_short'].value_counts())
 
-        def map_sensor_count_columns_to_set_str(pt_set_str_s):
-            out_d = dict()
-            out_d['num_sensors'] = pt_set_str_s.map(cls.n_sensors_d)
-            out_d['more_than_sensors'] = out_d['num_sensors'].ge(100).map(
-                {False: '$<$ 100 Sensors', True: '$\geq$ 100 Sensors'})
-            out_d['num_sensor_cat'] = out_d['num_sensors'].pipe(pd.cut, bins=[70, 93, 105, 235],
-                                                                labels=['small', 'med', 'large'], right=False)
-            df = pd.DataFrame(out_d)
-            df.columns = pt_set_str_s.name + '_' + df.columns
-            return df
 
-        train_set_size_df = map_sensor_count_columns_to_set_str(result_options_df.train_sets)
+        train_set_size_df = cls.map_sensor_count_columns_to_set_str(result_options_df.train_sets)
         result_options_df = result_options_df.join(train_set_size_df)
 
         result_options_df['train_cv_delta'] = result_options_df.cv_accuracy - result_options_df.train_accuracy
+        pretrain_col = 'pretrained_results'
+        pretrain_col = pretrain_col if pretrain_col in result_options_df.columns else 'pretrained_model_opts'
+        (result_options_df,
+         pretrain_exper_df,
+         pretrained_results_df,
+         opt_cols)  = cls.preprocess_pretraining_results(result_options_df,
+                                                         pretrained_results_col=pretrain_col,
+                                                         indicator_eval_d=indicator_eval_d
+                                                         )
+
         # - Parse out pretrained results -
-        pretrained_results_df = result_options_df.pretrained_results.apply(pd.Series)
+        #pretrained_results_df = result_options_df.pretrained_results.apply(pd.Series)
+
+        #(pretrained_results_df,
+        # pretrained_cv_results_df,
+        # pretrained_epoch_results_df,
+        # opt_cols) = experiments.upack_result_options_to_columns(
+        #    pretrained_results_df,
+        #    parse_cv_and_epoch_results=True)
+        #result_options_df['pretrain_name'] = pretrained_results_df['name']
+        ##result_options_df['pretrained_quant_num_vars'] = pretrained_results_df['quant_num_vars']
+        ##result_options_df['pretrained_n_encoder_layers'] = pretrained_results_df['n_encoder_layers']
+        #result_options_df['quant_num_vars'] = pretrained_results_df['quant_num_vars']
+        #result_options_df['n_encoder_layers'] = pretrained_results_df['n_encoder_layers']
+        #result_options_df['ras_pos_encoding'] = pretrained_results_df['ras_pos_encoding']
+        #result_options_df['positional_encoding_method'] = pretrained_results_df['positional_encoding_method']
+        #result_options_df['feature_extractor_layers'] = pretrained_results_df['feature_extractor_layers']
+        #if 'ras_architecture' in pretrained_results_df.columns:
+        #    result_options_df['ras_architecture'] = pretrained_results_df['ras_architecture']
+        #if 'feature_grad_mult' in pretrained_results_df.columns:
+        #    result_options_df['feature_grad_mult'] = pretrained_results_df['feature_grad_mult']
+
+        #result_options_df['pretrain_sets'] = pretrained_results_df.train_sets
+        #result_options_df['pretrain_n_sets'] = result_options_df.pretrain_sets.str.split(',').map(len)
+        #result_options_df['Fine Tuning Pt.'] = result_options_df.train_sets.map(cls.pt_str_to_pub_id)
+        #pretrain_set_size_df = cls.map_sensor_count_columns_to_set_str(result_options_df.pretrain_sets)
+        #result_options_df = result_options_df.join(pretrain_set_size_df)
+        #print(result_options_df['task_name_pub_fmt_short'].value_counts())
+
+        #if indicator_eval_d is not None:
+        #    for col, eval_str in indicator_eval_d.items():
+        #        pretrained_results_df[col] = pretrained_results_df.eval(eval_str)
+        #        result_options_df[col] = pretrained_results_df.eval(eval_str)
+        #    #pretrained_results_df[indicator_eval_d.keys()].apply(lambda )
+
+        ##pretrained_results_df['Large SSL'] = pretrained_results_df.eval("quant_num_vars == 160 and n_encoder_layers== 8")
+        ##pretrained_results_df['Medium SSL'] = pretrained_results_df.eval("quant_num_vars == 20 and n_encoder_layers== 8")
+        ##pretrained_results_df['Small SSL'] = pretrained_results_df.eval("quant_num_vars == 10 and n_encoder_layers== 4")
+        ##ssl_types = ['Small SSL', 'Medium SSL', 'Large SSL', ]
+        #ind_cols = list(indicator_eval_d.keys())
+        #result_options_df['SSL Type'] = result_options_df[ind_cols].apply(
+        #    lambda s: ','.join(s[s].index.values) if s.any() else 'UNK',
+        #    axis=1).astype('category')#categories=ind_cols + ['UNK']))
+
+
+        ##result_options_df['SSL Type'] = pretrained_results_df[
+        ##    indicator_eval_d.keys()
+        ##].idxmax(axis=1).astype(pd.CategoricalDtype(categories=indicator_eval_d.keys()))
+
+        ##pretrained_results_df['SSL Type'] = (
+        ##    pretrained_results_df.eval("quant_num_vars == 160 and n_encoder_layers== 8")
+        ##    .replace({True: "Large SSL", False: "Small SSL"}))
+        ##result_options_df['SSL Type'] = pretrained_results_df['SSL Type']
+
+        ##ctab_cols = ['SSL Type', 'task_name', 'train_sets']
+        #test_sets_s = result_options_df.pretrain_sets.str.split(',').map(set).apply(lambda s: cls.all_set_strs - s)
+        #test_sizes = test_sets_s.map(len)
+        #result_options_df['pretrain_n_holdout_sets'] = test_sizes
+
+        #for test_s in test_sizes.unique():
+        #    test_s_m = result_options_df['pretrain_n_holdout_sets'].eq(test_s)
+        #    m_test_sets_s = test_sets_s[test_s_m]
+        #    # 6 pair has holdout of 1
+        #    if test_s == 1:
+        #        #assert test_sets_s.map(len).max() == 1
+        #        result_options_df.loc[
+        #            test_s_m,
+        #            'pretraining_holdout_pub_id'] = m_test_sets_s.explode().map(cls.pt_str_to_pub_id)
+        #        #ctab_cols.append('pretraining_holdout_pub_id')
+
+        #        result_options_df.loc[
+        #            test_s_m,
+        #            'Pretraining Pts.'] = result_options_df.loc[test_s_m].pretrain_sets.map(
+        #            lambda s: ", ".join(str(pub_id) for pt_str, pub_id in cls.pt_str_to_pub_id.items() if pt_str in s)
+        #        )
+
+        #        #result_options_df['pt_transfer_type'] = result_options_df.eval('train_sets == pretrain_sets').replace(
+        #        #    {True: "Same Pt.", False: "Different Pt."})
+        #        result_options_df.loc[
+        #            test_s_m,
+        #            'pt_transfer_type'] = result_options_df.loc[test_s_m].apply(
+        #            lambda r: r.train_sets in r.pretrain_sets,
+        #            axis=1).replace({True: "Same Pt.", False: "Different Pt."})
+
+        #        result_options_df.loc[
+        #            test_s_m,
+        #            'Transfer Type'] = (
+        #                result_options_df.loc[test_s_m].pretraining_holdout_pub_id == result_options_df.loc[
+        #            test_s_m, 'Fine Tuning Pt.'
+        #        ]).map(
+        #            {True: 'Non-Pretrain Pt.', False: 'Pretrain Pt.'}
+        #        )
+        #    # 1 pair has holdout of 6
+        #    elif test_s == 6:
+        #        result_options_df.loc[
+        #            test_s_m,
+        #            'pretraining_holdout_pub_id'] = m_test_sets_s.map(lambda l: ", ".join(str(cls.pt_str_to_pub_id[_l]) for _l in l))#.explode().map(cls.pt_str_to_pub_id)
+        #        result_options_df.loc[
+        #            test_s_m,
+        #            'Pretraining Pt.'] = result_options_df.loc[test_s_m].pretrain_sets.map(cls.pt_str_to_pub_id)
+        #        #ctab_cols.append('Pretraining Pt.')
+
+
+        #        result_options_df.loc[test_s_m, 'pt_transfer_type'] = result_options_df.loc[test_s_m].apply(
+        #            lambda r: r.train_sets in r.pretrain_sets,
+        #            axis=1).replace({True: "Same Pt.", False: "Different Pt."})
+        #        #result_options_df['pt_transfer_type'] = result_options_df.eval('train_sets in pretrain_sets').replace(
+        #        #    {True: "Same Pt.", False: "Different Pt."})
+        #    else:
+        #        raise ValueError(f"test_s  is {test_s}")
+
+        ##mean_test_acc_ctab = result_options_df.groupby(ctab_cols).test_accuracy.mean().unstack().round(2).T
+        ##mean_cv_acc_ctab = result_options_df.groupby(ctab_cols).cv_accuracy.mean().unstack().round(2).T
+        ##mean_train_acc_ctab = result_options_df.groupby(ctab_cols).train_accuracy.mean().unstack().round(2).T
+
+        #mean_pretrain_cv_loss_s = pretrained_cv_results_df.assign(
+        #    total_loss=pretrained_cv_results_df.eval("bce_loss+perplexity+feature_pen")
+        #).groupby('experiment_name').total_loss.mean()
+
+        #pretrain_exper_df = pd.concat([
+        #    result_options_df.groupby('pretrain_name').pretrain_sets_more_than_sensors.unique().explode(),
+        #    result_options_df.groupby('pretrain_name').pretrain_sets_num_sensor_cat.unique().explode(),
+        #    mean_pretrain_cv_loss_s.rename('pretrain_cv_loss')
+        #],
+        #    axis=1)
+        #print(result_options_df['task_name_pub_fmt_short'].value_counts())
+
+        #pretrain_set_size_df.columns
+        return cls.ParsedResults(result_options_df, pretrain_exper_df,
+                                 pretrained_results_df,
+                                 opt_cols,
+                                 None, None, None,
+                                 #mean_train_acc_ctab, mean_cv_acc_ctab, mean_test_acc_ctab
+                                 )
+
+    @classmethod
+    def preprocess_pretraining_results(cls, result_options_df: pd.DataFrame,
+                                       pretrained_results_col: str = 'pretrained_results',
+                                       indicator_eval_d: Optional[Dict[str, str]] = None):
+        # - Parse out pretrained results -
+        pretrained_results_df = result_options_df[pretrained_results_col].apply(pd.Series)
 
         (pretrained_results_df,
          pretrained_cv_results_df,
-         pretrained_epoch_results_df) = experiments.upack_result_options_to_columns(
+         pretrained_epoch_results_df,
+         opt_cols) = experiments.upack_result_options_to_columns(
             pretrained_results_df,
             parse_cv_and_epoch_results=True)
+
+        result_options_df = result_options_df.join(pretrained_results_df, lsuffix='',
+                                                   rsuffix='_pretrain')
+
         result_options_df['pretrain_name'] = pretrained_results_df['name']
-        result_options_df['pretrained_quant_num_vars'] = pretrained_results_df['quant_num_vars']
-        result_options_df['pretrained_n_encoder_layers'] = pretrained_results_df['n_encoder_layers']
-        result_options_df['ras_pos_encoding'] = pretrained_results_df['ras_pos_encoding']
-        result_options_df['positional_encoding_method'] = pretrained_results_df['positional_encoding_method']
+        #result_options_df['quant_num_vars'] = pretrained_results_df['quant_num_vars']
+        #result_options_df['n_encoder_layers'] = pretrained_results_df['n_encoder_layers']
+        #result_options_df['ras_pos_encoding'] = pretrained_results_df['ras_pos_encoding']
+        #result_options_df['positional_encoding_method'] = pretrained_results_df['positional_encoding_method']
+        #result_options_df['feature_extractor_layers'] = pretrained_results_df['feature_extractor_layers']
+        #if 'ras_architecture' in pretrained_results_df.columns:
+        #    result_options_df['ras_architecture'] = pretrained_results_df['ras_architecture']
+        #if 'feature_grad_mult' in pretrained_results_df.columns:
+        #    result_options_df['feature_grad_mult'] = pretrained_results_df['feature_grad_mult']
 
         result_options_df['pretrain_sets'] = pretrained_results_df.train_sets
         result_options_df['pretrain_n_sets'] = result_options_df.pretrain_sets.str.split(',').map(len)
         result_options_df['Fine Tuning Pt.'] = result_options_df.train_sets.map(cls.pt_str_to_pub_id)
-        pretrain_set_size_df = map_sensor_count_columns_to_set_str(result_options_df.pretrain_sets)
+        pretrain_set_size_df = cls.map_sensor_count_columns_to_set_str(result_options_df.pretrain_sets)
         result_options_df = result_options_df.join(pretrain_set_size_df)
         print(result_options_df['task_name_pub_fmt_short'].value_counts())
 
-        pretrained_results_df['Large SSL'] = pretrained_results_df.eval("quant_num_vars == 160 and n_encoder_layers== 8")
-        pretrained_results_df['Medium SSL'] = pretrained_results_df.eval("quant_num_vars == 20 and n_encoder_layers== 8")
-        pretrained_results_df['Small SSL'] = pretrained_results_df.eval("quant_num_vars == 10 and n_encoder_layers== 4")
-        ssl_types = ['Small SSL', 'Medium SSL', 'Large SSL', ]
-        result_options_df['SSL Type'] = pretrained_results_df[
-            ssl_types
-        ].idxmax(axis=1).astype(pd.CategoricalDtype(categories=ssl_types))
+        if 'model_output_shape' in result_options_df.columns:
+            result_options_df['model_output_shape_str'] = result_options_df.model_output_shape \
+                .apply(lambda s: tuple(s) if isinstance(s, list) else tuple()) \
+                .apply(lambda l: "x".join(str(t) for t in l[1:]) if len(l) > 0 else "NA"
+                       )
+            if 'model_output_shape_str' not in opt_cols:
+                opt_cols.append('model_output_shape_str')
+
+        result_options_df['parent_dir'] = result_options_df.path.apply(lambda s: os.path.split(s)[0])
+        result_options_df['feature_extractor_layers_str'] = result_options_df.feature_extractor_layers.apply(eval).apply(lambda l: "|".join(".".join(str(_t) for _t in t) for t in l))
+        if 'feature_extractor_layers_str' not in opt_cols:
+            opt_cols.append('feature_extractor_layers_str')
+
+
+        if indicator_eval_d is not None:
+            for col, eval_str in indicator_eval_d.items():
+                pretrained_results_df[col] = pretrained_results_df.eval(eval_str)
+                result_options_df[col] = pretrained_results_df.eval(eval_str)
+            #pretrained_results_df[indicator_eval_d.keys()].apply(lambda )
+
+        #pretrained_results_df['Large SSL'] = pretrained_results_df.eval("quant_num_vars == 160 and n_encoder_layers== 8")
+        #pretrained_results_df['Medium SSL'] = pretrained_results_df.eval("quant_num_vars == 20 and n_encoder_layers== 8")
+        #pretrained_results_df['Small SSL'] = pretrained_results_df.eval("quant_num_vars == 10 and n_encoder_layers== 4")
+        #ssl_types = ['Small SSL', 'Medium SSL', 'Large SSL', ]
+        ind_cols = list(indicator_eval_d.keys())
+        result_options_df['SSL Type'] = result_options_df[ind_cols].apply(
+            lambda s: ','.join(s[s].index.values) if s.any() else 'UNK',
+            axis=1).astype('category')#categories=ind_cols + ['UNK']))
+
+
+        #result_options_df['SSL Type'] = pretrained_results_df[
+        #    indicator_eval_d.keys()
+        #].idxmax(axis=1).astype(pd.CategoricalDtype(categories=indicator_eval_d.keys()))
 
         #pretrained_results_df['SSL Type'] = (
         #    pretrained_results_df.eval("quant_num_vars == 160 and n_encoder_layers== 8")
@@ -196,14 +399,14 @@ class FineTuneResultParsingOptions(experiments.ResultParsingOptions):
                     lambda r: r.train_sets in r.pretrain_sets,
                     axis=1).replace({True: "Same Pt.", False: "Different Pt."})
 
-                result_options_df.loc[
-                    test_s_m,
-                    'Transfer Type'] = (
-                        result_options_df.loc[test_s_m].pretraining_holdout_pub_id == result_options_df.loc[
-                    test_s_m, 'Fine Tuning Pt.'
-                ]).map(
-                    {True: 'Non-Pretrain Pt.', False: 'Pretrain Pt.'}
-                )
+                #result_options_df.loc[
+                #    test_s_m,
+                #    'Transfer Type'] = (
+                #        result_options_df.loc[test_s_m].pretraining_holdout_pub_id == result_options_df.loc[
+                #    test_s_m, 'Fine Tuning Pt.'
+                #]).map(
+                #    {True: 'Non-Pretrain Pt.', False: 'Pretrain Pt.'}
+                #)
             # 1 pair has holdout of 6
             elif test_s == 6:
                 result_options_df.loc[
@@ -214,7 +417,6 @@ class FineTuneResultParsingOptions(experiments.ResultParsingOptions):
                     'Pretraining Pt.'] = result_options_df.loc[test_s_m].pretrain_sets.map(cls.pt_str_to_pub_id)
                 #ctab_cols.append('Pretraining Pt.')
 
-
                 result_options_df.loc[test_s_m, 'pt_transfer_type'] = result_options_df.loc[test_s_m].apply(
                     lambda r: r.train_sets in r.pretrain_sets,
                     axis=1).replace({True: "Same Pt.", False: "Different Pt."})
@@ -222,6 +424,11 @@ class FineTuneResultParsingOptions(experiments.ResultParsingOptions):
                 #    {True: "Same Pt.", False: "Different Pt."})
             else:
                 raise ValueError(f"test_s  is {test_s}")
+
+
+        result_options_df['Transfer Type'] = result_options_df.pt_transfer_type.eq("Same Pt.").replace(
+            {True: "Pretrain Pt.", False: "Non-Pretrain Pt."}
+        )
 
         #mean_test_acc_ctab = result_options_df.groupby(ctab_cols).test_accuracy.mean().unstack().round(2).T
         #mean_cv_acc_ctab = result_options_df.groupby(ctab_cols).cv_accuracy.mean().unstack().round(2).T
@@ -239,12 +446,7 @@ class FineTuneResultParsingOptions(experiments.ResultParsingOptions):
             axis=1)
         print(result_options_df['task_name_pub_fmt_short'].value_counts())
 
-
-        #pretrain_set_size_df.columns
-        return cls.ParsedResults(result_options_df, pretrain_exper_df,
-                                 None, None, None
-                                 #mean_train_acc_ctab, mean_cv_acc_ctab, mean_test_acc_ctab
-                                 )
+        return result_options_df, pretrain_exper_df, pretrained_results_df, opt_cols
 
     @classmethod
     def from_results_paths(cls, paths):
@@ -258,6 +460,7 @@ class SpeechDetectionFineTuningTask(bxp.TaskOptions):
     task_name: str = "speech_classification_fine_tuning"
     dataset: datasets.DatasetOptions = datasets.DatasetOptions('hvs', train_sets='AUTO-REMAINING',
                                                                flatten_sensors_to_samples=False,
+                                                               extra_output_keys='sensor_ras_coord_arr',
                                                                pre_processing_pipeline='audio_gate')
     method: str = '2d_linear'
     squeeze_target: ClassVar[bool] = False
@@ -499,6 +702,9 @@ class FineTuningExperiment(bxp.Experiment):
 
     reinitialize_pretrain: bool = False
     inspection_plot_path: Optional[str] = None
+    inspection_plot_dir: str = '.'
+    inspection_plot_partition: str = 'train'
+    inspection_subplots: bool = False
     n_rs_clf_iter: Optional[int] = None
     rs_clf: Optional[str] = 'svm'
     run_ml: bool = True
@@ -718,19 +924,28 @@ class FineTuningExperiment(bxp.Experiment):
 
         return self.trainer, self.performance_map
 
-    def make_pretrain_inspection_plots(self):
-        self.initialize()
+    def make_pretrain_inspection_plots(self, overwrite: bool = False):
+        logger.info(f"Evaluating on task {self.task.task_name}")
+        self.make_pretrained_model()
         p = self.inspection_plot_path
         if p == 'AUTO':
-            p = f"pretrain_inspect_{tl.task.task_name}_{tl.pretraining_results['uid']}.pdf"
+            p = f"pretrain_inspect_{self.task.task_name}_{self.pretraining_results['name']}.pdf"
 
+        p = os.path.join(self.inspection_plot_dir, p)
+        if not overwrite:
+            exists = os.path.isfile(p)
+            if exists:
+                logger.info(f"Already output - {p} exists")
+                return
+
+        self.initialize()
         fig_d = self.make_plots()
         utils.figures_to_pdf(p, **{k: getattr(v, 'fig', v) for k, v in fig_d.items()})
 
-        for k, f in fig_d.items():
-            #fig = f.fig if isinstance(f, sns.FacetGrid) else f
-            fig = getattr(f, 'fig', f)
-            fig.savefig(p.replace('.pdf', f'_{k}.pdf'), bbox_inches='tight')
+        if self.inspection_subplots:
+            for k, f in fig_d.items():
+                fig = getattr(f, 'fig', f)
+                fig.savefig(p.replace('.pdf', f'_{k}.pdf'), bbox_inches='tight')
 
     def make_plots(self, class_label_remap=None):
 
@@ -743,23 +958,24 @@ class FineTuningExperiment(bxp.Experiment):
                  'imagining_region_stim': 'Imagining Region'},
         }
 
-        t_dataset = self.dataset_map['train']
-        class_val_to_label_d = next(iter(t_dataset.data_maps.values()))['index_source_map']
-        print(class_val_to_label_d)
+        dataset = self.dataset_map[self.inspection_plot_partition]
+        class_val_to_label_d = next(iter(dataset.data_maps.values()))['index_source_map']
+        logger.info(f"Class to label from index source map: {class_val_to_label_d}")
         if class_label_remap is None:
             class_label_remap = map_of_label_maps.get(self.task.task_name)
+        logger.info(f"Class to label remap: {class_label_remap}")
 
         if isinstance(class_label_remap, dict):
             class_val_to_label_d = {k: class_label_remap.get(v, v) for k, v in class_val_to_label_d.items()}
-            print(class_val_to_label_d)
+            logger.info(f"Class to label using label remap: {class_val_to_label_d}")
 
-        device = 'cuda'
+        device = self.task.device
 
         from tqdm.auto import tqdm
         import torch
 
         fig_d = dict()
-        fig, axs = matplotlib.pyplot.subplots(ncols=2)
+        fig, axs = matplotlib.pyplot.subplots(ncols=2, figsize=(15, 8))
         loss_df = pd.DataFrame(self.pretraining_results['epoch_outputs']).T
         title = "".join([(" " + word if ix % 7 else "\n" + word) for ix, word in enumerate(str(self).split())])
         ax = loss_df[['total_loss', 'cv_loss', 'accuracy']].plot(secondary_y='accuracy', logy=True,
@@ -796,7 +1012,7 @@ class FineTuningExperiment(bxp.Experiment):
 
         ax = corr_speak_df.hist(ax=axs[1])
         #ax.text(0.01, 0.5, "Hist. of flattened b2v features corrwith target ")
-        ax.set_title("Hist. of flattened b2v features corrwith target ")
+        ax.set_title("Hist. of flattened b2v\n features corrwith target")
         #kws_str = "".join((" " if i % 5 else "\n") + (f"{str(k)} = {str(v)}") for i, (k, v) in self.pretraining_results['model_kws'].items())
         kws_str = "model options:\n"
         kws_str += "".join((" " + s if i % 5 else "\n" + s)

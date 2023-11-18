@@ -190,6 +190,7 @@ class DatasetOptions(JsonSerializable, utils.SetParamsMixIn):
     data_subset: str = 'Data'
     output_key: str = 'signal_arr'
     label_reindex_col: Optional[str] = None#"patient"
+    critic_reindex_col: Optional[str] = None#"patient"
 
     extra_output_keys: Optional[str] = None
     random_sensors_to_samples: bool = False
@@ -263,6 +264,7 @@ class DatasetOptions(JsonSerializable, utils.SetParamsMixIn):
                         pipeline_params=self.pipeline_params,
                         data_subset=self.data_subset,
                         label_reindex_col=self.label_reindex_col,
+                        critic_reindex_col=self.critic_reindex_col,
                         extra_output_keys=self.extra_output_keys.split(',') if self.extra_output_keys is not None
                                           else None,
                         flatten_sensors_to_samples=self.flatten_sensors_to_samples,

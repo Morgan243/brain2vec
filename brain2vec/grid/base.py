@@ -124,6 +124,7 @@ class BaseExperimentGrid(JsonSerializable):
         if results_options_df is None:
             return list(), experiments_l
 
+        results_options_df, opt_cols = results_options_df
         unfiltered_experiments_l = list()
         filtered_experiments_l = list()
         for exper in experiments_l:
@@ -237,6 +238,8 @@ class BaseExperimentGrid(JsonSerializable):
                 f"filtering {len(already_exists)} "
                 f"completed in {self.existing_results_dir}"
             )
+            for s in set_of_sets_to_run:
+                logger.info(s)
             to_run_str = '\n'.join(map(str, set_of_sets_to_run))
             #logger.info(f"Sets to run: {to_run_str}")
         else:

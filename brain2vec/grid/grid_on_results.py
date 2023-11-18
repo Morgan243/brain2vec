@@ -38,7 +38,7 @@ class ExperimentGridOnResults(BaseExperimentGrid):
     ] = subgroups(
         {
             # TODO: might need to be implemented on info leakage for easier grid..?
-            #"info_leakage": InfoLeakageExperiment,
+            "info_leakage": InfoLeakageExperiment,
             "fine_tune": FineTuningExperiment
         },
         default="fine_tune",
@@ -61,6 +61,7 @@ class ExperimentGridOnResults(BaseExperimentGrid):
         assert self.input_results_dir is not None, "input_results_dir must be set!"
         input_results_df = self.load_existing_results(self.input_results_dir)
         assert input_results_df is not None, f"no results found in {self.input_results_dir}"
+        input_results_df, opt_cols = input_results_df
         logger.info(f"Found {len(input_results_df)} result files in {self.input_results_dir}")
         if self.input_results_query is not None:
             assert isinstance(self.input_results_query, str),\
@@ -79,8 +80,14 @@ class ExperimentGridOnResults(BaseExperimentGrid):
             res_path = os.path.join(self.input_results_dir, row['name'])
             input_result_file_paths.append(res_path)
         # Update the grid object with new result_file assignments
-        grid_d['pretrained_result_input.result_file'] = input_result_file_paths
-        grid_d['pretrained_result_input.model_base_path'] = [os.path.join(self.input_results_dir, 'models')]
+        if isinstance(self.experiment_base_instance, FineTuningExperiment):
+            input_field_name = 'pretrained_result_input'
+        elif isinstance(self.experiment_base_instance, InfoLeakageExperiment):
+            input_field_name = 'task.pretrained_model_input'
+        else:
+            raise ValueError()
+        grid_d[f'{input_field_name}.result_file'] = input_result_file_paths
+        grid_d[f'{input_field_name}.model_base_path'] = [os.path.join(self.input_results_dir, 'models')]
 
         self.experiment_component_grids_str = json.dumps(grid_d)
 

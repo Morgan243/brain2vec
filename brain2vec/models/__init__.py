@@ -52,6 +52,7 @@ class Trainer:
     compile_models = attr.ib(True)
 
     weights_init_f = attr.ib(None)
+    new_best_cv_cb = attr.ib(None)
 
     epoch_cb_history = attr.ib(attr.Factory(list), init=False)
     batch_cb_history = attr.ib(attr.Factory(list), init=False)
@@ -79,10 +80,10 @@ class Trainer:
                 self.cv_data_gen = IterableWrapper(self.cv_data_gen).in_memory_cache()
 
         self.model_map = {k: v.to(self.device) for k, v in self.model_map.items()}
-        if self.compile_models and hasattr(torch, 'compile'):
+        #if self.compile_models and hasattr(torch, 'compile'):
             #torch._dynamo.config.suppress_errors = True
             #torch._dynamo.config.verbose = True
-            self.model_map = {k: torch.compile(m) for k, m in self.model_map.items()}
+        #    self.model_map = {k: torch.compile(m) for k, m in self.model_map.items()}
 
 
         self.scheduler_map = dict()
@@ -90,6 +91,7 @@ class Trainer:
         for k, m in self.model_map.items():
             # Init model weights
             if self.weights_init_f is not None:
+                self.logger.info("Trainer reinitializing weignts")
                 m.apply(self.weights_init_f)
 
             # Hard coded support for a some optimizers and their different constructions
@@ -112,15 +114,19 @@ class Trainer:
                                                                                    verbose=True,
                                                                                    **self.lr_adjust_on_plateau_kws)
 
-    def copy_model_states(self, models_to_exclude: Optional[List[str]] = None) -> Dict[str, Dict[str, torch.Tensor]]:
+    def copy_model_states(self, models_to_exclude: Optional[List[str]] = None,
+                          auto_fix_orig_mod: bool = True,
+                          ) -> Dict[str, Dict[str, torch.Tensor]]:
         models_to_exclude = list() if models_to_exclude is None else models_to_exclude
         return {k: copy_model_state(m) for k, m in self.model_map.items() if k not in models_to_exclude}
 
-    def get_best_state(self, model_key='model'):
+    def get_best_state(self, model_key='model', auto_fix_orig_mod=True):
         if getattr(self, 'best_model_state', None) is not None:
-            return self.best_model_state
+            model_state = self.best_model_state
         else:
-            return copy_model_state(self.model_map[model_key])
+            model_state = copy_model_state(self.model_map[model_key])
+
+        return model_state
 
     def train(self, n_epochs,
               epoch_callbacks=None,
@@ -200,6 +206,8 @@ class Trainer:
                             self.logger.info("-------------------------")
                             self.last_best_epoch = epoch
                             self.last_best_cv_l = cv_l_mean
+                            if self.new_best_cv_cb is not None:
+                                self.new_best_cv_cb(self)
                         elif (epoch - self.last_best_epoch) > self.early_stopping_patience:
                             self.logger.info("--------EARLY STOPPING----------")
                             self.logger.info(f"{epoch} - {self.last_best_epoch} > {self.early_stopping_patience} :: {cv_l_mean}, {self.last_best_cv_l}")

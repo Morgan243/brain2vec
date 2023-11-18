@@ -83,12 +83,16 @@ class BaseASPEN(BaseDataset):
     label_reindex_col: str = attr.ib(None)#"patient"
     label_reindex_map: Optional[dict] = attr.ib(None)
 
+    critic_reindex_col: str = attr.ib(None)
+    critic_reindex_map: Optional[dict] = attr.ib(None)
+
     initialize_data = attr.ib(True)
     initialize_indices = attr.ib(True)
     n_init_jobs: int = attr.ib(7, init=True)   
 
     selected_flat_keys = attr.ib(None, init=False)
     label_reindex_ix: Optional[int] = attr.ib(None, init=False)
+    critic_reindex_ix: Optional[int] = attr.ib(None, init=False)
 
     data_maps: dict = attr.ib(None, init=False)
     n_samples_per_window: int = attr.ib(None, init=False)
@@ -175,6 +179,9 @@ class BaseASPEN(BaseDataset):
         self.label_reindex_col = other.label_reindex_col
         self.label_reindex_ix = other.label_reindex_ix
         self.label_reindex_map = other.label_reindex_map
+        self.critic_reindex_col = other.critic_reindex_col
+        self.critic_reindex_ix = other.critic_reindex_ix
+        self.critic_reindex_map = other.critic_reindex_map
 
     @classmethod
     def _load_and_pre_process_parallel_helper(cls, l_p_s_t_tuple,
@@ -194,6 +201,11 @@ class BaseASPEN(BaseDataset):
                     delayed(self.__class__._load_and_pre_process_parallel_helper)(t, self.pipeline_f, self.data_subset)
                     for t in self.patient_tuples)
                 )
+
+        from joblib.externals.loky import get_reusable_executor
+        self.logger.info("Shutting down loky")
+        get_reusable_executor().shutdown(wait=True)
+        self.logger.info("..done")
 
         # - Important processing - #
         # - Process each subject in data map through pipeline func
@@ -436,13 +448,27 @@ class BaseASPEN(BaseDataset):
 
         # Auto make a reindex map from a reindex_col's every unique value
         if self.label_reindex_col is not None:
+            # Take the index in the key_cols list for the reindex_col
             self.label_reindex_ix = self.key_cols.index(self.label_reindex_col)
         elif self.label_reindex_col is None and self.label_reindex_map is not None:
             raise ValueError("label_reindex_col is required when label_reindex_map is provided")
 
+        # When there is a reindex col, but no way to map target labels
+        # - give them class indexes based on sorted unique values
         if self.label_reindex_map is None and self.label_reindex_col is not None:
             unique_reindex_labels = list(sorted(self.sample_ix_df[self.label_reindex_col].unique()))
             self.label_reindex_map = {l: i for i, l in enumerate(unique_reindex_labels)}
+
+        if self.critic_reindex_col is not None:
+            self.critic_reindex_ix = self.key_cols.index(self.critic_reindex_col)
+        if self.critic_reindex_map is None and self.critic_reindex_col is not None:
+            if self.critic_reindex_col == 'patient':
+                self.critic_reindex_map = {
+                    4:0, 5:1, 10:2, 18:3, 19:4, 22:5, 28:6
+                }
+            else:
+                unique_critic_labels = list(sorted(self.sample_ix_df[self.critic_reindex_col].unique()))
+                self.critic_reindex_map = {l: i for i, l in enumerate(unique_critic_labels)}
 
         self.logger.info("Converting dataframe to a flat list of key variables (self.flat_keys)")
         self.ixed_sample_ix_df = self.sample_ix_df.set_index(self.key_cols).sort_index()
@@ -581,6 +607,11 @@ class BaseASPEN(BaseDataset):
                              label=self.label_reindex_map[ix_k[self.label_reindex_ix]] if self.label_reindex_ix is not None else ix_k[0],
                              target_transform=self.target_transform)
         )
+
+        if self.critic_reindex_col is not None:
+            so.update(self.get_targets(data_d, ix,
+                             label=self.critic_reindex_map[ix_k[self.critic_reindex_ix]],
+                             target_key='critic_arr'))
 
         if self.post_processing_func is not None:
             so_updates = self.post_processing_func(so, **self.post_processing_kws)
