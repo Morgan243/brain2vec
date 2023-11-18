@@ -114,16 +114,25 @@ def upack_result_options_to_columns(results_df: pd.DataFrame,
         result_options_df['result_file'] = result_options_df['path']
 
     if not parse_cv_and_epoch_results:
-        return result_options_df
+        return result_options_df, opt_cols
 
-    cv_results_df = pd.concat([
-        pd.DataFrame(row.cv).assign(experiment_name=row['name'],
-                                    uid=row.uid,
-                                    model_name=row.model_name,
-                                    # Options
-                                    **{opt_name: row[opt_name] for opt_name in opt_cols}
-                                    )
-        for ix, row in result_options_df.iterrows()]).reset_index(names='epoch_num')
+    return parse_epoch_results(result_options_df, opt_cols)
+
+
+def parse_epoch_results(result_options_df, opt_cols):
+    cv_results_df = None
+    has_training_complete_col = 'training_complete' in result_options_df.columns
+    if not has_training_complete_col or (has_training_complete_col and result_options_df.training_complete.fillna(True).any()):
+        cv_results_df = pd.concat([
+            pd.DataFrame(row.cv).assign(experiment_name=row['name'],
+                                        uid=row.uid,
+                                        model_name=row.model_name,
+                                        # Options
+                                        **{opt_name: row[opt_name] for opt_name in opt_cols}
+                                        )
+            for ix, row in result_options_df.iterrows()
+            if not has_training_complete_col or row['training_complete']
+        ]).reset_index(names='epoch_num')
 
     epoch_results_df = pd.concat([
         pd.DataFrame(row.epoch_outputs).T.assign(experiment_name=row['name'],
@@ -135,7 +144,8 @@ def upack_result_options_to_columns(results_df: pd.DataFrame,
                                                  )
         for ix, row in result_options_df.iterrows()]).reset_index(names='epoch_num')
 
-    return result_options_df, cv_results_df, epoch_results_df
+    return result_options_df, cv_results_df, epoch_results_df, opt_cols
+
 
 @dataclass
 class ResultParsingOptions(JsonSerializable):
