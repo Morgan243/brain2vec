@@ -64,12 +64,6 @@ logger = utils.get_logger(__name__)
 
 with_logger = utils.with_logger
 
-@dataclass
-class InfoLeakageResultParsingOptions(ft.FineTuneResultParsingOptions):
-    result_file: Optional[Union[str, List[str]]] = None
-    print_results: Optional[bool] = False
-
-
 
 class SingleChannelAttacker(torch.nn.Module):
     def __init__(
@@ -153,6 +147,7 @@ class MultiChannelAttacker(torch.nn.Module):
         elif hidden_encoder == "linear":
             self.lin_dim = self.outputs
             self.hidden_encoder = torch.nn.Sequential(
+                # Hidden layers
                 *[
                     zm.LinearBlock.make_linear_block(
                         self.linear_hidden_n,
@@ -161,6 +156,7 @@ class MultiChannelAttacker(torch.nn.Module):
                     )
                     for i in range(self.n_layers - 1)
                 ],
+                # Output layer
                 *zm.LinearBlock.make_linear_block(
                     self.outputs,
                     dropout_rate=self.dropout_rate,
@@ -358,6 +354,8 @@ class DatasetWithModel:
                 #sample_ixes = torch.randint(
                 #    low=0, high=x.shape[0], size=(self.mc_n_channels_to_sample,)
                 #)
+
+                # Random sample of the channel dimension, without replacement
                 sample_ixes = torch.randperm(x.shape[0])[:self.mc_n_channels_to_sample]
                 updates = {
                     k: arr[sample_ixes]
@@ -1284,12 +1282,26 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
 
                 )
 
-        loaded_dsets = Parallel(backend='loky', n_jobs=len(all_dataset_with_model_map.keys()), verbose=10)(
-                delayed(self.load_one_dataset_with_model)(dset_with_model, 
+
+        backend = "threading"
+        n_jobs = len(all_dataset_with_model_map.keys())
+        #backend = "loky"
+        #n_jobs=4
+        loaded_dsets = Parallel(backend=backend, n_jobs=n_jobs, verbose=10)(
+                delayed(self.load_one_dataset_with_model)(dset_with_model,
                                                           sensor_columns=selected_columns,
                                                           is_multichannel=is_multichannel)
                 for sm_or_t_k, dset_with_model in all_dataset_with_model_map.items()
                 )
+        from joblib.externals.loky import get_reusable_executor
+        self.logger.info("Shutting down loky")
+        get_reusable_executor().shutdown(wait=True)
+        self.logger.info("..done")
+
+        #loaded_dsets =[self.load_one_dataset_with_model(dset_with_model,
+        #                                                sensor_columns=selected_columns,
+        #                                                is_multichannel=is_multichannel)
+        #               for sm_or_t_k, dset_with_model in all_dataset_with_model_map.items()]
 
         all_dataset_with_model_map = dict(zip(all_dataset_with_model_map.keys(), loaded_dsets))
 
@@ -1437,10 +1449,14 @@ class InfoLeakageExperiment(bxp.Experiment):
 
         T, C = self.task.get_member_model_output_shape()
         bce_loss_output_shape = self.task.get_member_model_attr('bce_loss_output_shape')
-        n_negatives = self.task.get_member_model_attr('n_negatives')
-        mask_length = self.task.get_member_model_attr('mask_length')
-        q_num_vars = self.task.get_member_model_attr('quant_num_vars')
-        q_num_groups = self.task.get_member_model_attr('quant_num_groups')
+        #n_negatives = self.task.get_member_model_attr('n_negatives')
+        #mask_length = self.task.get_member_model_attr('mask_length')
+        #q_num_vars = self.task.get_member_model_attr('quant_num_vars')
+        #q_num_groups = self.task.get_member_model_attr('quant_num_groups')
+
+        # Correct the activatoin class in the options
+        # The activation option isn't actually passed through
+        self.attacker_model.activation_class = 'LReLU'
 
         if "2d" in self.attacker_model.fine_tuning_method:
             if hasattr(self.task, "get_num_channels"):
@@ -1499,6 +1515,7 @@ class InfoLeakageExperiment(bxp.Experiment):
             device=self.task.device,
             squeeze_target=self.task.squeeze_target,
             cache_dataloaders=False,
+            #cache_dataloaders=True,
         )
         self.initialized = True
         return self
@@ -1551,27 +1568,27 @@ class InfoLeakageExperiment(bxp.Experiment):
 
         return part_name, output_cm, output_clf_report, output_performance
 
-    def eval_parallel(self):
-        class_labels = self.target_labels
-        class_val_to_label_d = self.target_label_map
-        
-        result_tuples_l = Parallel(backend='loky', n_jobs=3, verbose=10)(
-                delayed(self._eval_part)(part_name=part_name,
-                                         out_d=out_d,
-                                         class_labels=class_labels, 
-                                         class_val_to_label_d=class_val_to_label_d)
-                for part_name, out_d in outputs_map.items()
-                )
-        output_cmap = {t[0]: t[1] for t in result_tuples_l}
-        output_clf_report_map = {t[0]: t[2] for t in result_tuples_l}
-        output_performance_map = {t[0]: t[3] for t in result_tuples_l}
-
-        self.outputs_map, self.output_cm_map, self.performance_map, self.clf_str_map = [
-            outputs_map,
-            output_cm_map,
-            output_performance_map,
-            output_clf_report_map,
-        ]
+#    def eval_parallel(self):
+#        class_labels = self.target_labels
+#        class_val_to_label_d = self.target_label_map
+#
+#        result_tuples_l = Parallel(backend='loky', n_jobs=3, verbose=10)(
+#                delayed(self._eval_part)(part_name=part_name,
+#                                         out_d=out_d,
+#                                         class_labels=class_labels,
+#                                         class_val_to_label_d=class_val_to_label_d)
+#                for part_name, out_d in outputs_map.items()
+#                )
+#        output_cmap = {t[0]: t[1] for t in result_tuples_l}
+#        output_clf_report_map = {t[0]: t[2] for t in result_tuples_l}
+#        output_performance_map = {t[0]: t[3] for t in result_tuples_l}
+#
+#        self.outputs_map, self.output_cm_map, self.performance_map, self.clf_str_map = [
+#            outputs_map,
+#            output_cm_map,
+#            output_performance_map,
+#            output_clf_report_map,
+#        ]
 
     def eval(self):
         outputs_map = self.trainer.generate_outputs(**self.eval_dl_map)
@@ -1670,6 +1687,7 @@ class InfoLeakageExperiment(bxp.Experiment):
         # Prep a results structure for saving - everything must be json serializable (no array objects)
         dataset_rates = {part: rate_s.to_dict() 
                          for part, rate_s in self.task.get_target_rates(normalize=False, as_series=True).items()}
+
         res_dict = self.create_result_dictionary(
             model_name=self.attacker_model.model_name,
             epoch_outputs=self.attacker_model_train_results,
