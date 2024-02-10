@@ -492,6 +492,8 @@ class Brain2Vec(torch.nn.Module):
         self.output_contexts_predictions = False
 
         loss_list = self.losses_to_output.split(',')
+        print(f"Configuring these losses_to_output: {loss_list}")
+
 
         ## Measure how the feature encoders quantization is distributed
         if 'fqp' in loss_list:
@@ -505,7 +507,11 @@ class Brain2Vec(torch.nn.Module):
             self.output_context_q_proba = True
         ## Measure how well the encoder did, given the extracted features
         if 'cl' in loss_list:
-            self.bce_loss_output_shape += self.T * self.mask_length
+            #self.bce_loss_output_shape += self.T * self.mask_length
+            # Fix: we don't use the configured mask length from pretraining
+            #     BCE loss extraction instead slides a 1-sequence mask across all steps
+            #     This worked with mask length of 1, but breaks when pretrained with larger masks
+            self.bce_loss_output_shape += self.T
             self.output_contrastive_loss = True
         ## Provide the context encoders prediction for each masked step
         if 'cp' in loss_list:
