@@ -117,7 +117,7 @@ class BaseDataset(tdata.Dataset):
     _dataset_registry: ClassVar[Dict] = dict()
 
     @classmethod
-    def make_dataloader(cls, dset, batch_size=64, num_workers=2,
+    def make_dataloader(cls, dset, batch_size=64, num_workers=0,
                       batches_per_epoch=None, random_sample=True,
                       shuffle=False, pin_memory=False, **kwargs):
         if random_sample:
@@ -139,7 +139,7 @@ class BaseDataset(tdata.Dataset):
                                           **kwargs)
         return dataloader
 
-    def to_dataloader(self, batch_size=64, num_workers=2,
+    def to_dataloader(self, batch_size=64, num_workers=0,
                       batches_per_epoch=None, random_sample=True,
                       shuffle=False, pin_memory=False, **kwargs):
         return self.make_dataloader(self, batch_size=batch_size, num_workers=num_workers,

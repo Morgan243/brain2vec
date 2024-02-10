@@ -194,18 +194,23 @@ class BaseASPEN(BaseDataset):
     def load_and_pre_process(self):
         # - Data Loading -
         # - Load the data in its raw form from files - default is matlab files, override to change
-        self.logger.info("Loading data directly, IN PARALLEL!")
-        # Each job loads the data and applies the preprocesing pipeline
-        mat_data_maps = dict(
-                Parallel(n_jobs=self.n_init_jobs, verbose=10, backend='loky')(
-                    delayed(self.__class__._load_and_pre_process_parallel_helper)(t, self.pipeline_f, self.data_subset)
-                    for t in self.patient_tuples)
-                )
+        if self.n_init_jobs > 1:
+            self.logger.info("Loading data directly, IN PARALLEL!")
+            # Each job loads the data and applies the preprocesing pipeline
+            mat_data_maps = dict(
+                    Parallel(n_jobs=self.n_init_jobs, verbose=10, backend='loky')(
+                        delayed(self.__class__._load_and_pre_process_parallel_helper)(t, self.pipeline_f, self.data_subset)
+                        for t in self.patient_tuples)
+                    )
 
-        from joblib.externals.loky import get_reusable_executor
-        self.logger.info("Shutting down loky")
-        get_reusable_executor().shutdown(wait=True)
-        self.logger.info("..done")
+            from joblib.externals.loky import get_reusable_executor
+            self.logger.info("Shutting down loky")
+            get_reusable_executor().shutdown(wait=True)
+            self.logger.info("..done")
+        else:
+            mat_data_maps = dict([
+                self.__class__._load_and_pre_process_parallel_helper(t, self.pipeline_f, self.data_subset)
+                    for t in self.patient_tuples])
 
         # - Important processing - #
         # - Process each subject in data map through pipeline func
