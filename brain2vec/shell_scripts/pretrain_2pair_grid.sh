@@ -10,7 +10,8 @@ mkdir -p $RESULT_PATH
 #GRID="{'model.quant_num_vars':[20,40,80,160],'model.n_encoder_layers':[4,6,8]}"
 #GRID="{'model.quant_num_vars':[200],'model.n_encoder_layers':[8]}"
 #GRID="{'model.quant_num_vars':[10],'model.n_encoder_layers':[4]}"
-GRID="{'model.quant_num_vars':[160],'model.n_encoder_layers':[8]}"
+#GRID="{'model.quant_num_vars':[160],'model.n_encoder_layers':[8]}"
+GRID="{'model.quant_num_vars':[20],'model.n_encoder_layers':[6]}"
 
 python -m brain2vec.grid.base \
 --experiment_base_instance=pretrain \

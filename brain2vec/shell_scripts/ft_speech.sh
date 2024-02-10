@@ -3,10 +3,12 @@
 #--input_results_dir ../results_local/results_pretrain_1pair_230507/
 #--input_results_query='quant_num_vars == 10 and n_encoder_layers== 4' \
 #--input_results_query='quant_num_vars == 10 and n_encoder_layers== 4 and ("UCSD-4" in train_sets)' \
+#--input_results_query='quant_num_vars == 20 and n_encoder_layers== 8' \
+#--input_results_query='training_complete and feature_extractor_layers=="[(128, 7, 7)]  + [(64, 5, 5), (16, 3, 2)]"' \
 
 python -m brain2vec.grid.grid_on_results \
+--input_results_query='training_complete' \
 --experiment_component_grids_str='{}' \
---input_results_query='quant_num_vars == 20 and n_encoder_layers== 8' \
 --result_file='dummy' \
 --task=speech_detection \
 --sample_tuples_for=train_sets \

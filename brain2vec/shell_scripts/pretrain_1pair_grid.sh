@@ -16,7 +16,7 @@ mkdir -p $RESULT_PATH
 #GRID="{'model.quant_num_vars':[10],'model.n_encoder_layers':[4],'model.ras_pos_encoding':[False],'model.positional_encoding_method':['position']}"
 #GRID="{'model.quant_num_vars':[160],'model.n_encoder_layers':[8],'model.ras_pos_encoding':[False],'model.positional_encoding_method':['position']}"
 #GRID="{'model.quant_num_vars':[160],'model.n_encoder_layers':[8]}"
-GRID="{'model.quant_num_vars':[160],'model.n_encoder_layers':[8]}"
+GRID="{'model.quant_num_vars':[20],'model.n_encoder_layers':[8]}"
 
 
 python -m brain2vec.grid.base \

@@ -10,8 +10,8 @@ mkdir -p $RESULT_PATH
 
 #GRID="{'model.quant_num_vars':[10],'model.n_encoder_layers':[4]}"
 #GRID="{'model.quant_num_vars':[160],'model.n_encoder_layers':[8]}"
-#GRID="{'model.quant_num_vars':[20],'model.n_encoder_layers':[8]}"
-GRID="{'model.quant_num_vars':[40],'model.n_encoder_layers':[10]}"
+GRID="{'model.quant_num_vars':[20],'model.n_encoder_layers':[8]}"
+#GRID="{'model.quant_num_vars':[20],'model.n_encoder_layers':[10]}"
 
 #GRID="{'model.quant_num_vars':[160],'model.n_encoder_layers':[8],'model.ras_pos_encoding':[False],'model.positional_encoding_method':['position']}"
 
@@ -19,8 +19,8 @@ python -m brain2vec.grid.base \
 --experiment_base_instance=pretrain \
 --experiment_component_grids_str=$GRID \
 --device=$DEVICE \
---n_dl_workers=0 \
---n_dl_eval_workers=0 \
+--n_dl_workers=1 \
+--n_dl_eval_workers=1 \
 --task=semi_supervised \
 --dataset=hvs \
 --lr_adjust_patience=10 \
@@ -32,5 +32,5 @@ python -m brain2vec.grid.base \
 --sample_tuples_for="train_sets" \
 --sample_choose_n=6 \
 --sensor_columns="good_for_participant" \
---result_dir=$RESULT_PATH "${@:3}"
+--result_dir=${RESULT_PATH} "${@:3}"
 

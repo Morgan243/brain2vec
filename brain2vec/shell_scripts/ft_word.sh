@@ -3,9 +3,10 @@
 #--result_dir=../results_local/ft_speech_230530 \
 #--input_results_query='quant_num_vars == 10 and n_encoder_layers== 4 and (train_sets != "UCSD-4")' \
 #--input_results_query='quant_num_vars == 10 and n_encoder_layers== 4 and ("UCSD-4" in train_sets)' \
+#--input_results_query='quant_num_vars == 20 and n_encoder_layers== 8' \
 
 python -m brain2vec.grid.grid_on_results \
---input_results_query='quant_num_vars == 20 and n_encoder_layers== 8' \
+--input_results_query='training_complete' \
 --experiment_component_grids_str='{}' \
 --result_file='dummy' \
 --task=word_detection \
