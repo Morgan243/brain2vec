@@ -54,6 +54,7 @@ class BaseExperimentGrid(JsonSerializable):
     sample_tuples_for: Optional[str] = None
     sample_choose_n: Optional[int] = None
     sample_to_skip: Optional[str] = None
+    n_to_run: Optional[int] = None
 
     def __post_init__(self):
         if self.experiment_component_grids_str is None:
@@ -251,11 +252,20 @@ class BaseExperimentGrid(JsonSerializable):
 
     def run(self):
         experiments = list(self.get_experiments())
+        n_completed = 0
         while len(experiments) > 0:
             exper = experiments.pop(0)
             exper = deepcopy(exper)
             exper.run()
             del exper
+            from joblib.externals.loky import get_reusable_executor
+            print("Grid - Shutting down loky")
+            get_reusable_executor().shutdown(wait=True)
+            print("Grid - ..done")
+            n_completed += 1
+            if self.n_to_run is not None and n_completed >= self.n_to_run:
+                print(f"Ending early - completed {n_completed}, which >= {self.n_to_run}")
+                break
 
 
 if __name__ == """__main__""":
