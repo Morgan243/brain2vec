@@ -1,0 +1,7 @@
+*.pdf
+*.ipynb
+*.csv
+*.hdf
+*.xlsx
+*.egg-info/
+__pycache__/
