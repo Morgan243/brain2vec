@@ -77,3 +77,7 @@ def class_f1_from_cm(cm_df, c_id):
 def class_acc_from_cm(cm_df, c_id):
     tp, tn, fp, fn = confusion_matrix_for(cm_df, c_id)
     return (tp + tn) / (tp + tn + fp + fn)
+
+def class_balanced_acc_from_cm(cm_df, c_id):
+    tp, tn, fp, fn = confusion_matrix_for(cm_df, c_id)
+    return 0.5 * ( (tp / (tp + fn)) + (tn / (tn + fp)))
