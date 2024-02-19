@@ -1198,7 +1198,7 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
         member_model = next(iter(self.shadow_model_map.values()))
         return getattr(member_model, attr_name)
 
-    def make_dataset_and_loaders(self, **kws) -> Tuple[Dict, Dict, Dict]:
+    def get_datasets_with_models(self, **kws):
         self.load_models()
         # Target models and shadow models need to be
         assert all(
@@ -1249,11 +1249,11 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
         )
         selected_columns = sensor_columns
 
-        all_dataset_with_model_map = {sm_k: DatasetWithModel(p_tuples=unique_shadow_sets, 
+        all_dataset_with_model_map = {sm_k: DatasetWithModel(p_tuples=unique_shadow_sets,
                                                              reindex_map={
                                                                  s[1]: 1 if s in sm_pretrain_sets_d[sm_k] else 0
                                                                  for s in unique_shadow_sets
-                                                                 },
+                                                             },
                                                              dataset_cls=dataset_cls,
                                                              member_model=m,
                                                              mc_n_channels_to_sample=self.n_channels_to_sample,
@@ -1261,27 +1261,114 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
                                                              output_loss=self.model_output_key == 'bce_loss'
                                                              )
                                       for sm_k, m in self.shadow_model_map.items()}
-            
+
         unique_target_sets: List[Tuple] = list(
             set(sum(target_pretrain_sets_d.values(), list()))
         )
 
         all_dataset_with_model_map.update(
-                {t_k: DatasetWithModel(p_tuples=unique_target_sets, 
-                                       reindex_map={
-                                           s[1]: 1 if s in target_pretrain_sets_d[t_k] else 0
-                                           for s in unique_target_sets
-                                           },
-                                       dataset_cls=dataset_cls,
-                                       member_model=m,
-                                       mc_n_channels_to_sample=self.n_channels_to_sample,
-                                       model_output_key=self.model_output_key,
-                                       output_loss=self.model_output_key == 'bce_loss'
-                                       )
-                 for t_k, m in self.target_model_map.items()}
+            {t_k: DatasetWithModel(p_tuples=unique_target_sets,
+                                   reindex_map={
+                                       s[1]: 1 if s in target_pretrain_sets_d[t_k] else 0
+                                       for s in unique_target_sets
+                                   },
+                                   dataset_cls=dataset_cls,
+                                   member_model=m,
+                                   mc_n_channels_to_sample=self.n_channels_to_sample,
+                                   model_output_key=self.model_output_key,
+                                   output_loss=self.model_output_key == 'bce_loss'
+                                   )
+             for t_k, m in self.target_model_map.items()}
 
-                )
+        )
 
+        return all_dataset_with_model_map, selected_columns, is_multichannel, cv_shadow_models
+
+    def make_dataset_and_loaders(self, **kws) -> Tuple[Dict, Dict, Dict]:
+        #self.load_models()
+        ## Target models and shadow models need to be
+        #assert all(
+        #    tgt_id not in self.shadow_model_map
+        #    for tgt_id in self.target_model_map.keys()
+        #), "IDs in target and shadow maps are not unique"
+        #sensor_columns = kws.get("sensor_columns", None)
+
+        ## We'll use the CLI options to set the expected dataset - later assert that all models used same dataset
+        #dataset_cls = datasets.BaseDataset.get_dataset_by_name(
+        #    self.dataset.dataset_name
+        #)
+
+        #sm_pretrain_sets_d = {
+        #    k: self.load_and_check_pretrain_opts(
+        #        res, self.dataset.dataset_name, dataset_cls
+        #    )
+        #    for k, res in self.shadow_model_results_map.items()
+        #}
+        #target_pretrain_sets_d = {
+        #    k: self.load_and_check_pretrain_opts(
+        #        res, self.dataset.dataset_name, dataset_cls
+        #    )
+        #    for k, res in self.target_model_results_map.items()
+        #}
+
+        ## All set tuples used across shadow models
+        #unique_shadow_sets = list(set(sum(sm_pretrain_sets_d.values(), list())))
+
+        ## Select two shadow models from the train set to use in the CV
+        #cv_method = 'pt'
+        #if cv_method == 'simple':
+        #    # - TODO: maybe select on participant and their three pretrained models? Stronger early stopping
+        #    cv_shadow_models = np.random.choice(list(self.shadow_model_map.keys()), size=2)
+        #elif cv_method == 'pt':
+        #    cv_pt_ix = np.random.choice(list(range(len(unique_shadow_sets))))
+        #    cv_pt_tuple = unique_shadow_sets[cv_pt_ix]
+        #    # Get all 3 models that were trained on the random CV participant (plus one of the other 3 shadow pts)
+        #    cv_shadow_models = np.array([sm_id
+        #                                 for sm_id, sm_res_d in self.shadow_model_results_map.items()
+        #                                 if f'UCSD-{cv_pt_tuple[1]}' in sm_res_d['dataset_options']['train_sets']])
+
+        #    self.logger.info(f'CV tuple: {cv_pt_tuple}, SM IDs: {cv_shadow_models}')
+
+        #is_multichannel = True if "2d" in self.method else False
+        #sensor_columns = (
+        #    "good_for_participant" if sensor_columns is None else sensor_columns
+        #)
+        #selected_columns = sensor_columns
+
+        #all_dataset_with_model_map = {sm_k: DatasetWithModel(p_tuples=unique_shadow_sets,
+        #                                                     reindex_map={
+        #                                                         s[1]: 1 if s in sm_pretrain_sets_d[sm_k] else 0
+        #                                                         for s in unique_shadow_sets
+        #                                                         },
+        #                                                     dataset_cls=dataset_cls,
+        #                                                     member_model=m,
+        #                                                     mc_n_channels_to_sample=self.n_channels_to_sample,
+        #                                                     model_output_key=self.model_output_key,
+        #                                                     output_loss=self.model_output_key == 'bce_loss'
+        #                                                     )
+        #                              for sm_k, m in self.shadow_model_map.items()}
+        #
+        #unique_target_sets: List[Tuple] = list(
+        #    set(sum(target_pretrain_sets_d.values(), list()))
+        #)
+
+        #all_dataset_with_model_map.update(
+        #        {t_k: DatasetWithModel(p_tuples=unique_target_sets,
+        #                               reindex_map={
+        #                                   s[1]: 1 if s in target_pretrain_sets_d[t_k] else 0
+        #                                   for s in unique_target_sets
+        #                                   },
+        #                               dataset_cls=dataset_cls,
+        #                               member_model=m,
+        #                               mc_n_channels_to_sample=self.n_channels_to_sample,
+        #                               model_output_key=self.model_output_key,
+        #                               output_loss=self.model_output_key == 'bce_loss'
+        #                               )
+        #         for t_k, m in self.target_model_map.items()}
+
+        #        )
+
+        all_dataset_with_model_map, selected_columns, is_multichannel, cv_shadow_models  = self.get_datasets_with_models(**kws)
 
         backend = "threading"
         n_jobs = len(all_dataset_with_model_map.keys())
@@ -1389,6 +1476,16 @@ class ShadowClassifierMembershipInferenceFineTuningTask(DatasetWithModelBaseTask
         target_label_map = {0: "non_member", 1: "member"}
         target_labels = list(target_label_map.values())
         return target_label_map, target_labels
+
+    def persist_as_dataset(self, dir):
+        Path(self.task_dataset_dir).mkdir(parents=True, exist_ok=True)
+
+
+
+    @classmethod
+    def from_persisted_dataset(cls, dir):
+        raise NotImplementedError()
+
 
 
 @with_logger
@@ -1667,7 +1764,10 @@ class InfoLeakageExperiment(bxp.Experiment):
         self.eval()
         self.save()
 
-    def persist_task_dataset(self, output_keys = None):
+    def persist_task_dataset(self, output_keys = None, use_tasks_method_if_it_exists = True):
+        if use_tasks_method_if_it_exists and hasattr(self.task, 'persist_as_dataset'):
+            return self.task.persist_as_dataset(self.task_dataset_dir)
+
         Path(self.task_dataset_dir).mkdir(parents=True, exist_ok=True)
         for part_name, part_dl in self.eval_dl_map.items():
             part_p = os.path.join(self.task_dataset_dir, part_name)
